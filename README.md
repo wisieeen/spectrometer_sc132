@@ -58,4 +58,4 @@ State is published to `{state_topic}{key}` (e.g. `lab/monocamera/state/fps`, `la
 
 ## License
 
-MIT
+GNU GPL 3.0
