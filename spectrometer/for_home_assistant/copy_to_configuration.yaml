@@ -1,0 +1,159 @@
+
+    
+stream:
+
+ffmpeg:
+
+camera:
+  - platform: ffmpeg
+    name: Lab Monocamera
+    input: rtsp://10.0.0.114:8554/mystream
+    
+        
+mqtt:
+  sensor:     
+    - name: "Spectrometer Status"
+      unique_id: spectrometer_status
+      state_topic: "lab/spectrometer/state/status"
+      value_template: "{{ value }}"
+
+    - name: "Spectrometer Spectrum ch0"
+      unique_id: spectrometer_spectrum_ch0
+      state_topic: "lab/spectrometer/state/spectrum/ch0"
+      value_template: "{{ value_json.timestamp }}"
+      json_attributes_topic: "lab/spectrometer/state/spectrum/ch0"
+      
+  button:
+    - name: "Lab Mono Camera Shutdown"
+      command_topic: "lab/monocamera/cmd/shutdown"
+      payload_press: "ON"
+      
+    - name: "Spectrometer Single Shot"
+      unique_id: spectrometer_single
+      command_topic: "lab/spectrometer/cmd/single"
+      payload_press: ""
+    - name: "Spectrometer Preview"
+      unique_id: spectrometer_preview
+      command_topic: "lab/spectrometer/cmd/preview"
+      payload_press: ""
+
+  switch:
+    - name: "Lab Mono Camera"
+      command_topic: "lab/monocamera/cmd/rtsp"
+      payload_on: "ON"
+      payload_off: "OFF"
+
+    - name: "Spectrometer Continuous"
+      unique_id: spectrometer_continuous
+      object_id: spectrometer_continuous
+      command_topic: "lab/spectrometer/cmd/continuous"
+      state_topic: "lab/spectrometer/state/status"
+      payload_on: "ON"
+      payload_off: "OFF"
+      state_on: "running"
+      state_off: "idle"
+
+    - name: "Spectrometer Dark/Flat Correction"
+      unique_id: spectrometer_dark_flat_enabled
+      object_id: spectrometer_dark_flat_enabled
+      command_topic: "lab/spectrometer/cmd/processing_dark_flat_enabled"
+      state_topic: "lab/spectrometer/state/processing_dark_flat_enabled"
+      payload_on: "true"
+      payload_off: "false"
+
+  select:
+    - name: "Mono Camera Resolution"
+      state_topic: "lab/monocamera/state/resolution"
+      command_topic: "lab/monocamera/cmd/resolution"
+      options:
+        - "1080×1080"
+        - "1080x640"
+        - "1080x320"
+
+
+  number:
+    - name: "Mono Camera FPS"
+      state_topic: "lab/monocamera/state/fps"
+      command_topic: "lab/monocamera/cmd/fps"
+      min: 1
+      max: 30
+      step: 1
+      mode: slider
+
+    - name: "Mono Camera gain"
+      state_topic: "lab/monocamera/state/gain"
+      command_topic: "lab/monocamera/cmd/gain"
+      min: 1
+      max: 40
+      step: 1
+      mode: slider
+
+    - name: "Mono Camera shutter (µs)"
+      object_id: mono_camera_shutter_us
+      state_topic: "lab/monocamera/state/shutter"
+      command_topic: "lab/monocamera/cmd/shutter"
+      min: 100
+      max: 100000
+      step: 100
+      mode: slider
+      unit_of_measurement: "µs"
+
+    - name: "Mono Camera shutterL (µs)"
+      object_id: mono_camera_shutterl_us
+      state_topic: "lab/monocamera/state/shutter"
+      command_topic: "lab/monocamera/cmd/shutter"
+      min: 100000
+      max: 5000000
+      step: 100000
+      mode: slider
+      unit_of_measurement: "µs"
+      
+    - name: "Spectrometer Interval (ms)"
+      unique_id: spectrometer_interval
+      command_topic: "lab/spectrometer/cmd/interval_ms"
+      state_topic: "lab/spectrometer/state/interval_ms"
+      min: 1000
+      max: 60000
+      step: 100
+      mode: slider
+      unit_of_measurement: "ms"
+
+    - name: "Spectrometer Frame Average"
+      unique_id: spectrometer_frame_average_n
+      object_id: spectrometer_frame_average_n
+      command_topic: "lab/spectrometer/cmd/processing_frame_average_n"
+      state_topic: "lab/spectrometer/state/processing_frame_average_n"
+      min: 1
+      max: 1000
+      step: 1
+      mode: slider
+
+template:
+  - sensor:
+      - name: "Spectrometer Peak Wavelength"
+        unique_id: spectrometer_peak_wavelength
+        state: >
+          {% set w = state_attr('sensor.spectrometer_spectrum_ch0', 'wavelengths_nm') %}
+          {% set i = state_attr('sensor.spectrometer_spectrum_ch0', 'intensities') %}
+          {% if w is not none and i is not none and w|length > 0 %}
+            {% set i_f = i|map('float')|list %}
+            {% set idx = i_f.index(i_f|max) %}
+            {{ (w[idx]|float)|round(1) }}
+          {% else %}
+            —
+          {% endif %}
+        unit_of_measurement: "nm"
+        availability: "{{ states('sensor.spectrometer_spectrum_ch0') not in ['unknown', 'unavailable', ''] }}"
+
+      - name: "Spectrometer Meta"
+        unique_id: spectrometer_meta
+        state: >
+          {% set m = state_attr('sensor.spectrometer_spectrum_ch0', 'meta') %}
+          {% if m is not none %}
+            {{ m.get('shutter_us', '—') }} µs / {{ m.get('gain_db', '—') }} dB
+          {% else %}
+            —
+          {% endif %}
+        availability: "{{ states('sensor.spectrometer_spectrum_ch0') not in ['unknown', 'unavailable', ''] }}"
+        
+        

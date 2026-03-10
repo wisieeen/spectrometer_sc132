@@ -1,0 +1,203 @@
+# =============================================================================
+# Home Assistant - Spectrometer Dashboard
+# Based on spectrometer/docs/AGENT_FRONTEND.md
+# =============================================================================
+#
+# USAGE:
+# 1. Add the "MQTT CONFIGURATION" block to configuration.yaml (merge into existing mqtt:)
+# 2. Add the "TEMPLATE SWITCH" block to configuration.yaml (merge into switch:)
+# 3. Add the "TEMPLATE SENSORS" block to configuration.yaml (merge into template:)
+# 4. Add the "DASHBOARD" block to Lovelace (Dashboard → Raw configuration editor)
+# 5. Spectrum chart: copy spectrum-card.js to HA www/, add as Lovelace resource
+#
+# MQTT topics (configurable via env_config.json spectrometer.cmd_topic / state_topic):
+#   lab/spectrometer/cmd/start | stop | single | interval_ms | preview
+#   lab/spectrometer/cmd/processing_frame_average_n | processing_dark_flat_enabled
+#   lab/spectrometer/cmd/processing_wiener_enabled | processing_wiener_psf_sigma | processing_wiener_regularization
+#   lab/spectrometer/state/status | interval_ms | processing_*
+#   lab/spectrometer/state/spectrum/{channel_id}
+# =============================================================================
+
+# --- MQTT CONFIGURATION (add to configuration.yaml mqtt: block) ---
+# Merge these under your existing mqtt: key
+mqtt:
+  sensor:
+    - name: "Spectrometer Status"
+      unique_id: spectrometer_status
+      state_topic: "lab/spectrometer/state/status"
+      value_template: "{{ value }}"
+
+    - name: "Spectrometer Spectrum ch0"
+      unique_id: spectrometer_spectrum_ch0
+      state_topic: "lab/spectrometer/state/spectrum/ch0"
+      value_template: "{{ value_json.timestamp }}"
+      json_attributes_topic: "lab/spectrometer/state/spectrum/ch0"
+
+  button:
+    - name: "Spectrometer Single Shot"
+      unique_id: spectrometer_single
+      command_topic: "lab/spectrometer/cmd/single"
+      payload_press: ""
+
+    - name: "Spectrometer Preview"
+      unique_id: spectrometer_preview
+      command_topic: "lab/spectrometer/cmd/preview"
+      payload_press: ""
+
+  number:
+    - name: "Spectrometer Interval (ms)"
+      unique_id: spectrometer_interval
+      command_topic: "lab/spectrometer/cmd/interval_ms"
+      state_topic: "lab/spectrometer/state/interval_ms"
+      min: 100
+      max: 60000
+      step: 100
+      mode: slider
+      unit_of_measurement: "ms"
+
+    - name: "Spectrometer Wiener PSF Sigma"
+      unique_id: spectrometer_wiener_psf_sigma
+      command_topic: "lab/spectrometer/cmd/processing_wiener_psf_sigma"
+      state_topic: "lab/spectrometer/state/processing_wiener_psf_sigma"
+      min: 0.5
+      max: 20
+      step: 0.5
+      mode: slider
+      unit_of_measurement: "px"
+
+    - name: "Spectrometer Wiener Regularization"
+      unique_id: spectrometer_wiener_regularization
+      command_topic: "lab/spectrometer/cmd/processing_wiener_regularization"
+      state_topic: "lab/spectrometer/state/processing_wiener_regularization"
+      min: 0.0001
+      max: 0.5
+      step: 0.001
+      mode: slider
+
+  switch:
+    - name: "Spectrometer Wiener Deconvolution"
+      unique_id: spectrometer_wiener_enabled
+      command_topic: "lab/spectrometer/cmd/processing_wiener_enabled"
+      state_topic: "lab/spectrometer/state/processing_wiener_enabled"
+      payload_on: "true"
+      payload_off: "false"
+      value_template: "{{ value }}"
+
+# --- TEMPLATE SWITCH & SENSORS (add to configuration.yaml) ---
+# MQTT switch uses separate topics for on/off; template switch publishes to each
+switch:
+  - platform: template
+    switches:
+      spectrometer_continuous:
+        friendly_name: "Spectrometer Continuous"
+        value_template: "{{ is_state('sensor.spectrometer_status', 'running') }}"
+        turn_on:
+          service: mqtt.publish
+          data:
+            topic: "lab/spectrometer/cmd/start"
+            payload: ""
+        turn_off:
+          service: mqtt.publish
+          data:
+            topic: "lab/spectrometer/cmd/stop"
+            payload: ""
+
+# --- TEMPLATE SENSORS (add to configuration.yaml template: block) ---
+# Creates derived sensors for spectrum display
+template:
+  - sensor:
+      - name: "Spectrometer Peak Wavelength"
+        unique_id: spectrometer_peak_wavelength
+        state: >
+          {% set w = state_attr('sensor.spectrometer_spectrum_ch0', 'wavelengths_nm') %}
+          {% set i = state_attr('sensor.spectrometer_spectrum_ch0', 'intensities') %}
+          {% if w is not none and i is not none and w|length > 0 %}
+            {% set i_f = i|map('float')|list %}
+            {% set idx = i_f.index(i_f|max) %}
+            {{ (w[idx]|float)|round(1) }}
+          {% else %}
+            —
+          {% endif %}
+        unit_of_measurement: "nm"
+        availability: "{{ states('sensor.spectrometer_spectrum_ch0') not in ['unknown', 'unavailable', ''] }}"
+
+      - name: "Spectrometer Meta"
+        unique_id: spectrometer_meta
+        state: >
+          {% set m = state_attr('sensor.spectrometer_spectrum_ch0', 'meta') %}
+          {% if m is not none %}
+            {{ m.get('shutter_us', '—') }} µs / {{ m.get('gain_db', '—') }} dB
+          {% else %}
+            —
+          {% endif %}
+        availability: "{{ states('sensor.spectrometer_spectrum_ch0') not in ['unknown', 'unavailable', ''] }}"
+
+# --- DASHBOARD (Lovelace - add as new view or paste into existing) ---
+# Spectrum chart uses custom spectrum-card.js (copy to www/, add as resource).
+type: vertical
+title: Spectrometer
+cards:
+  - type: heading
+    heading: Spectrometer Control
+    heading_style: title
+
+  - type: horizontal-stack
+    cards:
+      - type: entity
+        entity: switch.spectrometer_continuous
+        name: Continuous
+        icon: mdi:play-circle
+      - type: entity
+        entity: button.spectrometer_single_shot
+        name: Single Shot
+        icon: mdi:camera
+      - type: entity
+        entity: button.spectrometer_preview
+        name: Preview
+        icon: mdi:image
+      - type: entity
+        entity: number.spectrometer_interval
+        name: Interval
+
+  - type: entities
+    title: Signal Processing
+    entities:
+      - entity: switch.spectrometer_wiener_deconvolution
+        name: Wiener Deconvolution
+      - entity: number.spectrometer_wiener_psf_sigma
+        name: Wiener PSF Sigma
+      - entity: number.spectrometer_wiener_regularization
+        name: Wiener Regularization
+
+  - type: entity
+    entity: sensor.spectrometer_spectrum_ch0
+    name: Last Spectrum
+    attributes:
+      - channel_id
+      - meta
+    secondary_info: last-updated
+
+  - type: entities
+    title: Spectrum Info
+    entities:
+      - entity: sensor.spectrometer_peak_wavelength
+        name: Peak Wavelength
+      - entity: sensor.spectrometer_meta
+        name: Shutter / Gain
+
+  # Spectrum chart - full width, uses custom spectrum-card.js
+  - type: grid
+    columns: 1
+    square: false
+    cards:
+      - type: custom:spectrum-card
+        entity: sensor.spectrometer_spectrum_ch0
+        title: Spectrum (ch0)
+
+# --- NOTES ---
+# - Spectrum card: copy spectrometer/docs/spectrum-card.js to HA config/www/spectrum-card.js
+#   then add resource: /local/spectrum-card.js in Dashboard → Resources.
+# - Restart spectrometer_service.py after updating (publishes interval to MQTT).
+# - For additional channels: duplicate spectrum sensor, add spectrum-card with entity: sensor.spectrometer_spectrum_ch1
+# - Preview: MQTT cmd/preview runs spectrometer_preview.py; saves frame to /tmp/spectrometer_preview.png.
+#   RTSP stream must be OFF. Fetch image via SCP or serve via HTTP for line placement.

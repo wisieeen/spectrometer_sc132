@@ -1,0 +1,129 @@
+# =============================================================================
+# Spectrometer SC132 - GitHub .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# SECRETS & CREDENTIALS (never commit)
+# -----------------------------------------------------------------------------
+env_config.json
+.env
+.env.*
+!.env.example
+
+# -----------------------------------------------------------------------------
+# DEVICE-SPECIFIC CONFIGS (paths, calibration, credentials)
+# -----------------------------------------------------------------------------
+camera_config.json
+spectrometer_config.json
+spectrometer/spectrometer_config.json
+spectrum_saver_config.json
+spectrometer/scripts/spectrum_saver_config.json
+
+# -----------------------------------------------------------------------------
+# GENERATED DATA & OUTPUT
+# -----------------------------------------------------------------------------
+# Spectrum CSV captures
+spectra/
+spectrometer/scripts/spectra/
+**/spectrum_*.csv
+
+# Calibration frames (dark/flat - device-specific)
+*.npy
+*.npz
+calibration/
+spectrometer/calibration/
+
+# Temp/preview outputs
+/tmp/
+*.tmp
+spectrometer_preview.png
+
+# -----------------------------------------------------------------------------
+# PYTHON
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# -----------------------------------------------------------------------------
+# IDE & EDITORS
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# -----------------------------------------------------------------------------
+# OS FILES
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# LOGS & DEBUG
+# -----------------------------------------------------------------------------
+*.log
+logs/
+*.log.*
+
+# -----------------------------------------------------------------------------
+# CURSOR / MCP (workspace-specific)
+# -----------------------------------------------------------------------------
+mcps/
+.cursor/
+
+# -----------------------------------------------------------------------------
+# JUPYTER (if used for docs/analysis)
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# -----------------------------------------------------------------------------
+# MISC
+# -----------------------------------------------------------------------------
+*.bak
+*.orig
+*.rej

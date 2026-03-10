@@ -1,0 +1,97 @@
+title: Spectrometer
+cards: []
+type: sections
+sections:
+  - type: grid
+    cards:
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: switch.spectrometer_continuous
+            name: Continuous
+            icon: mdi:play-circle
+          - type: entity
+            entity: button.spectrometer_single_shot
+            name: Single Shot
+            icon: mdi:camera
+            tap_action:
+              action: perform-action
+              perform_action: mqtt.publish
+              target: {}
+              data:
+                evaluate_payload: false
+                qos: "0"
+                topic: lab/spectrometer/cmd/single
+          - type: entity
+            entity: number.spectrometer_interval
+            name: Interval
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: number.spectrometer_frame_average_n
+            name: Frame Average
+            icon: mdi:layers
+          - type: entity
+            entity: switch.spectrometer_dark_flat_enabled
+            name: Dark/Flat Correction
+            icon: mdi:image-filter-center-focus
+      - type: entities
+        title: Spectrum Info
+        entities:
+          - entity: sensor.spectrometer_peak_wavelength
+            name: Peak Wavelength
+          - entity: sensor.spectrometer_meta
+            name: Shutter / Gain
+      - type: entity
+        entity: sensor.spectrometer_spectrum_ch0
+        name: Last Spectrum
+      - type: sensor
+        entity: sensor.rpi02_battery_capacity
+        graph: line
+      - type: button
+        entity: button.spectrometer_preview
+        name: Preview script
+        icon: mdi:image
+        grid_options:
+          columns: 3
+          rows: 2
+      - show_name: true
+        show_icon: true
+        type: button
+        entity: button.lab_mono_camera_shutdown
+        grid_options:
+          columns: 3
+          rows: 2
+        icon: mdi:power
+  - path: lab_camera
+    cards:
+      - type: heading
+        heading: Camera
+      - show_state: true
+        show_name: true
+        camera_view: live
+        fit_mode: cover
+        type: picture-entity
+        entity: camera.lab_monocamera
+        name: Live Stream
+      - type: entities
+        title: Stream Control
+        entities:
+          - entity: switch.lab_mono_camera
+          - entity: select.mono_camera_resolution
+          - entity: number.mono_camera_fps
+      - type: entities
+        title: Image Parameters
+        entities:
+          - entity: number.mono_camera_gain
+          - entity: number.mono_camera_shutter_us
+          - entity: number.mono_camera_shutterl_us
+  - type: grid
+    columns: 1
+    square: false
+    cards:
+      - type: custom:spectrum-card
+        entity: sensor.spectrometer_spectrum_ch0
+        title: Spectrum (ch0)
+        grid_column: 1 / -1
+    column_span: 2

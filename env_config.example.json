@@ -1,0 +1,32 @@
+{
+  "mqtt": {
+    "broker": "YOUR_MQTT_BROKER_IP",
+    "port": 1883,
+    "user": "YOUR_MQTT_USERNAME",
+    "pass": "YOUR_MQTT_PASSWORD",
+    "cmd_topic": "lab/monocamera/cmd/",
+    "state_topic": "lab/monocamera/state/"
+  },
+  "rtsp": {
+    "url": "rtsp://YOUR_MEDIAMTX_HOST:8554/mystream"
+  },
+  "paths": {
+    "home": "/home/raspberry",
+    "camera_config": "/home/raspberry/camera_config.json",
+    "i2c_tool": "/home/raspberry/raspberrypi_v4l2/mv_tools_rpi/mv_mipi_i2c_new.sh"
+  },
+  "device": {
+    "video": "/dev/video0",
+    "i2c_bus": "10"
+  },
+  "services": {
+    "mediamtx": "mediamtx.service",
+    "rtsp_camera": "rtsp-camera.service"
+  },
+  "spectrometer": {
+    "cmd_topic": "lab/spectrometer/cmd/",
+    "state_topic": "lab/spectrometer/state/",
+    "config_path": "/home/raspberry/spectrometer/spectrometer_config.json"
+  },
+  "debug": false
+}
