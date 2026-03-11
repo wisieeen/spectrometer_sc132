@@ -1,4 +1,19 @@
 {
+  "gpio": {
+    "wifi_mode_pin": 5,
+    "webserver_pin": 6,
+    "mqtt_pin": 7
+  },
+  "wifi": {
+    "ap_ssid": "Spectrometer-AP",
+    "ap_passphrase": "changeme",
+    "ap_channel": 6,
+    "sta_config_path": "/etc/wpa_supplicant/wpa_supplicant.conf"
+  },
+  "webserver": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
   "mqtt": {
     "broker": "YOUR_MQTT_BROKER_IP",
     "port": 1883,
@@ -12,8 +27,8 @@
   },
   "paths": {
     "home": "/home/raspberry",
-    "camera_config": "/home/raspberry/camera_config.json",
-    "i2c_tool": "/home/raspberry/raspberrypi_v4l2/mv_tools_rpi/mv_mipi_i2c_new.sh"
+    "camera_config": "/home/raspberry/spectrometer_sc132-master/camera_config.json",
+    "i2c_tool": "/home/raspberry/spectrometer_sc132-master/raspberrypi_v4l2/mv_tools_rpi/mv_mipi_i2c_new.sh"
   },
   "device": {
     "video": "/dev/video0",
@@ -26,7 +41,7 @@
   "spectrometer": {
     "cmd_topic": "lab/spectrometer/cmd/",
     "state_topic": "lab/spectrometer/state/",
-    "config_path": "/home/raspberry/spectrometer/spectrometer_config.json"
+    "config_path": "/home/raspberry/spectrometer_sc132-master/spectrometer/spectrometer_config.json"
   },
   "debug": false
 }

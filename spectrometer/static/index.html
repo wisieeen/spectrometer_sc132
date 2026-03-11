@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spectrometer</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="header">
+    <h1>Spectrometer</h1>
+    <div class="theme-selector">
+      <label>Theme:</label>
+      <select id="themeSelect">
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="high-contrast">High contrast</option>
+        <option value="green-military">Green military</option>
+      </select>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="spectrometer">Spectrometer</button>
+    <button class="tab" data-tab="video">Video stream</button>
+    <button class="tab" data-tab="config">Configuration</button>
+  </nav>
+
+  <main class="content">
+    <section id="tab-spectrometer" class="tab-panel active">
+      <div class="spectrum-area">
+        <canvas id="spectrumCanvas"></canvas>
+        <div id="cursorLabel" class="cursor-label"></div>
+      </div>
+      <div class="controls spectrometer-controls">
+        <div class="control-row">
+          <button id="btnStart">Start</button>
+          <button id="btnStop">Stop</button>
+          <button id="btnSingle">Single</button>
+          <button id="btnPreview">Preview</button>
+        </div>
+        <div class="control-row">
+          <label>Interval (ms):</label>
+          <input type="number" id="intervalMs" min="100" max="3600000" value="1000">
+        </div>
+        <div class="control-row">
+          <label>Frame average N:</label>
+          <input type="number" id="frameAverageN" min="1" max="1000" value="1">
+        </div>
+        <div class="control-row">
+          <label><input type="checkbox" id="darkFlatEnabled"> Dark/flat correction</label>
+        </div>
+        <div class="control-row">
+          <label><input type="checkbox" id="wienerEnabled"> Wiener deconvolution</label>
+        </div>
+        <div class="control-row">
+          <label>Wiener PSF sigma:</label>
+          <input type="number" id="wienerPsfSigma" min="0.5" max="20" step="0.1" value="3">
+        </div>
+        <div class="control-row">
+          <label>Wiener regularization:</label>
+          <input type="number" id="wienerReg" min="0.0001" max="1" step="0.001" value="0.01">
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-video" class="tab-panel">
+      <div class="video-area">
+        <video id="videoStream" controls playsinline></video>
+        <button id="btnFullscreen" class="fullscreen-btn" title="Fullscreen">&#x26F6;</button>
+      </div>
+      <div class="controls video-controls">
+        <div class="control-row">
+          <button id="btnRtspOn">Start stream</button>
+          <button id="btnRtspOff">Stop stream</button>
+        </div>
+        <div class="control-row">
+          <label>Resolution:</label>
+          <input type="text" id="resolution" placeholder="1080x640">
+        </div>
+        <div class="control-row">
+          <label>FPS:</label>
+          <input type="number" id="fps" min="1" max="60" value="5">
+        </div>
+        <div class="control-row">
+          <label>Shutter (µs):</label>
+          <input type="number" id="shutter" min="0" value="4100">
+        </div>
+        <div class="control-row">
+          <label>Gain (dB):</label>
+          <input type="number" id="gain" step="0.1" value="1">
+        </div>
+        <div class="control-row">
+          <label>Pixel format:</label>
+          <select id="pixelFormat">
+            <option value="Y8">Y8 (8-bit)</option>
+            <option value="Y10">Y10 (10-bit)</option>
+            <option value="Y10P">Y10P</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab-panel">
+      <div class="config-section">
+        <h2>WiFi</h2>
+        <div class="control-row">
+          <label>SSID:</label>
+          <input type="text" id="wifiSsid" placeholder="Network name">
+        </div>
+        <div class="control-row">
+          <label>Password:</label>
+          <input type="password" id="wifiPassword" placeholder="Password">
+        </div>
+        <button id="btnWifiSave">Save WiFi</button>
+      </div>
+      <div class="config-section">
+        <h2>MQTT broker</h2>
+        <div class="control-row">
+          <label>Broker:</label>
+          <input type="text" id="mqttBroker" placeholder="Host or IP">
+        </div>
+        <div class="control-row">
+          <label>Port:</label>
+          <input type="number" id="mqttPort" value="1883">
+        </div>
+        <div class="control-row">
+          <label>Username:</label>
+          <input type="text" id="mqttUser">
+        </div>
+        <div class="control-row">
+          <label>Password:</label>
+          <input type="password" id="mqttPass">
+        </div>
+        <button id="btnMqttSave">Save MQTT</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

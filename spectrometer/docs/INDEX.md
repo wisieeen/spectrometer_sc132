@@ -13,6 +13,9 @@ Quick reference to all documentation files. Links are relative to this file.
 | [../../INSTALLATION.md](../../INSTALLATION.md)                       | Full setup: camera, mediamtx, systemd, spectrometer |
 | [../../VERSIONS.md](../../VERSIONS.md)                               | Dependency versions (Python, paho-mqtt, etc.)       |
 | [../../raspberrypi_v4l2/README.md](../../raspberrypi_v4l2/README.md) | VEYE MIPI driver build (local & cross-compile)      |
+| [../../docs/GPIO_MODES.md](../../docs/GPIO_MODES.md)                 | GPIO pin assignment, boot mode selection             |
+| [../../docs/WEBSERVER_API.md](../../docs/WEBSERVER_API.md)           | Webserver REST API spec                              |
+| [../../docs/WEBSERVER_UI.md](../../docs/WEBSERVER_UI.md)              | Webserver interface layout, themes                   |
 
 
 ---

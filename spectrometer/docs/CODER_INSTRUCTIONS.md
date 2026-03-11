@@ -26,6 +26,8 @@ Concise implementation notes for spectrometer subproject. See [INDEX.md](INDEX.m
 - [x] `scripts/spectrometer_calibrate_ui.py` – interactive wizard: line selection, spectrum, calibration, save config (device with display)
 - [x] `scripts/spectrometer_service.py` – MQTT loop, capture, extract, publish (commands: start, stop, single, interval_ms, preview, processing_*)
 - [x] `lib/signal_processing/` – dark_flat, frame_average, wiener (Phase 1–2); each technique independent, MQTT-toggleable
+- [x] `scripts/spectrometer_webserver.py` – Flask REST API + web UI; runs spectrometer when webserver GPIO enabled
+- [x] `install/gpio_bootstrap.py` – GPIO read at boot, mode/flag files, network AP/STA config
 
 ## Line Extraction Algorithm
 
@@ -37,7 +39,7 @@ Each technique is independent. Toggle via MQTT: `cmd/processing_frame_average_n`
 
 ## env_config Paths
 
-Reuse `paths.camera_config`, `paths.i2c_tool`, `device.video`, `device.i2c_bus`, `services.*`. Add `spectrometer.cmd_topic`, `spectrometer.state_topic`, `spectrometer.config_path` (optional).
+Reuse `paths.camera_config`, `paths.i2c_tool`, `device.video`, `device.i2c_bus`, `services.*`. Add `spectrometer.cmd_topic`, `spectrometer.state_topic`, `spectrometer.config_path` (optional). Add `gpio`, `wifi`, `webserver` for GPIO bootstrap and webserver.
 
 ## Optical Path Tools (docs/)
 
