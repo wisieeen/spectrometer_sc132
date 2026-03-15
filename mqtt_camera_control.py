@@ -74,6 +74,14 @@ def safe_shutdown():
     subprocess.run(["sudo", "shutdown", "-h", "now"], check=False, timeout=5)
 
 
+def safe_reboot():
+    """Stop stream, then reboot the device. Use on MQTT reboot command."""
+    if DEBUG:
+        print("[mqtt_camera] Reboot requested: stopping stream, then rebooting")
+    stop_stream()
+    subprocess.run(["sudo", "shutdown", "-r", "now"], check=False, timeout=5)
+
+
 def apply_exposure_and_gain(cfg):
     if not os.path.isfile(I2C_TOOL) or not os.access(I2C_TOOL, os.X_OK):
         if DEBUG:
@@ -159,6 +167,11 @@ def on_message(client, userdata, msg):
         if payload.upper() in ("ON", "1", "true", "yes"):
             safe_shutdown()
             return  # Device will power off; no need to publish state
+
+    elif topic == "reboot":
+        if payload.upper() in ("ON", "1", "true", "yes"):
+            safe_reboot()
+            return  # Device will reboot; no need to publish state
 
     elif topic == "resolution":
         cfg["resolution"] = payload

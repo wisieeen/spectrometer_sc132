@@ -172,6 +172,8 @@ Replace `YOUR_MEDIAMTX_HOST` with the host where mediamtx runs.
 
 **Shutdown**: Publish `ON` to `lab/monocamera/cmd/shutdown` (or your `cmd_topic` + `shutdown`) to safely power off the device. The MQTT controller stops the RTSP stream first, then runs `shutdown -h now`. Requires `sudo` permission for `/sbin/shutdown` (see Permissions section).
 
+**Reboot**: Publish `ON` to `lab/monocamera/cmd/reboot` (or your `cmd_topic` + `reboot`) to safely reboot the device. The MQTT controller stops the RTSP stream first, then runs `shutdown -r now`. Uses the same `sudo` permission as shutdown (see Permissions section).
+
 Example MQTT entities for control:
 
 ```yaml
@@ -185,6 +187,10 @@ mqtt:
   button:
     - name: "Lab Mono Camera Shutdown"
       command_topic: "lab/monocamera/cmd/shutdown"
+      payload_press: "ON"
+
+    - name: "Lab Mono Camera Reboot"
+      command_topic: "lab/monocamera/cmd/reboot"
       payload_press: "ON"
 
   select:
@@ -255,6 +261,7 @@ cards:
       - entity: select.mono_camera_resolution
       - entity: number.mono_camera_fps
       - entity: button.lab_mono_camera_shutdown
+      - entity: button.lab_mono_camera_reboot
     grid_options:
       columns: 18
       rows: auto
@@ -288,3 +295,8 @@ The spectrometer subproject captures spectra from the same camera. See [spectrom
 1. Publish `ON` to `lab/monocamera/cmd/rtsp` (or your `cmd_topic` + `rtsp`)
 2. Check `sudo systemctl status rtsp-camera.service` and `mediamtx.service`
 3. Open the RTSP URL in VLC or Home Assistant
+
+## 9. Troubleshooting
+
+- **Exposure/gain not changing** (MQTT works, `camera_config.json` updates, but image unchanged): See [docs/TROUBLESHOOTING_EXPOSURE_GAIN.md](docs/TROUBLESHOOTING_EXPOSURE_GAIN.md).
+- **Webserver: video stream or continuous spectrum won't activate**: See [docs/TROUBLESHOOTING_WEBSERVER_STREAM_SPECTRUM.md](docs/TROUBLESHOOTING_WEBSERVER_STREAM_SPECTRUM.md).

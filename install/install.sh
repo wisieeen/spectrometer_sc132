@@ -86,6 +86,24 @@ fi
 # --- 4. raspberrypi_v4l2 driver (Raspberry Pi only) ---
 ARCH=$(uname -m)
 if [[ "$ARCH" == arm* || "$ARCH" == aarch64 ]]; then
+  # 4a. Enable I2C (required for camera exposure/gain control)
+  CONFIG_FILE=""
+  if [ -f /boot/firmware/config.txt ]; then
+    CONFIG_FILE="/boot/firmware/config.txt"
+  elif [ -f /boot/config.txt ]; then
+    CONFIG_FILE="/boot/config.txt"
+  fi
+  if [ -n "$CONFIG_FILE" ]; then
+    for param in "dtparam=i2c_vc=on" "dtparam=i2c_arm=on"; do
+      if ! grep -q "^[[:space:]]*${param}" "$CONFIG_FILE" 2>/dev/null; then
+        echo "[4/7] Enabling I2C: adding $param to $CONFIG_FILE"
+        echo "$param" | sudo tee -a "$CONFIG_FILE" > /dev/null
+      fi
+    done
+    sudo modprobe i2c-dev 2>/dev/null || true
+    sudo usermod -aG i2c "$INSTALL_USER" 2>/dev/null || true
+  fi
+
   V4L2_TOOL="$PROJECT_DIR/raspberrypi_v4l2/mv_tools_rpi/mv_mipi_i2c_new.sh"
   if [ -x "$V4L2_TOOL" ]; then
     echo "[4/7] raspberrypi_v4l2 already present at $PROJECT_DIR/raspberrypi_v4l2"
@@ -115,6 +133,26 @@ if [[ "$ARCH" == arm* || "$ARCH" == aarch64 ]]; then
       echo "  WARNING: raspberrypi_v4l2 extraction failed (unexpected archive structure)"
     fi
     rm -rf "$TMP_V4L2"
+  fi
+
+  # 4b. mv_tools_rpi: chmod +x and compile I2C binaries if needed
+  MV_TOOLS="$PROJECT_DIR/raspberrypi_v4l2/mv_tools_rpi"
+  if [ -d "$MV_TOOLS" ]; then
+    for f in mv_mipi_i2c_new.sh mv_mipi_i2c.sh mv_probe.sh vbyone_i2c_init.sh enable_i2c_vc.sh camera_i2c_config; do
+      [ -f "$MV_TOOLS/$f" ] && chmod +x "$MV_TOOLS/$f"
+    done
+    for f in i2c_4read i2c_4write; do
+      [ -f "$MV_TOOLS/$f" ] && chmod +x "$MV_TOOLS/$f"
+    done
+    if [ ! -x "$MV_TOOLS/i2c_4read" ] && [ -f "$MV_TOOLS/sources/make.sh" ]; then
+      echo "  Compiling mv_tools I2C binaries (i2c_4read, i2c_4write)..."
+      sudo apt install -y build-essential 2>/dev/null || true
+      chmod +x "$MV_TOOLS/sources/make.sh"
+      (cd "$MV_TOOLS/sources" && ./make.sh)
+      for f in i2c_4read i2c_4write; do
+        [ -f "$MV_TOOLS/$f" ] && chmod +x "$MV_TOOLS/$f"
+      done
+    fi
   fi
 else
   echo "[4/7] Skipping raspberrypi_v4l2 (not Raspberry Pi)"
@@ -180,7 +218,7 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# rtsp-camera.service (conditional on MQTT GPIO)
+# rtsp-camera.service (conditional on MQTT GPIO) 
 chmod +x "$PROJECT_DIR/start_rtsp.sh"
 sudo tee /etc/systemd/system/rtsp-camera.service > /dev/null << EOF
 [Unit]
@@ -258,6 +296,7 @@ Environment=ENV_CONFIG=$PROJECT_DIR/env_config.json
 ExecStart=/usr/bin/python3 $PROJECT_DIR/spectrometer/scripts/spectrometer_webserver.py
 WorkingDirectory=$PROJECT_DIR
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -274,7 +313,7 @@ echo "  mqtt-camera.service, rtsp-camera.service: enabled at boot"
 echo "[7/7] Configuring sudoers..."
 SUDOERS_FILE="/etc/sudoers.d/spectrometer-sc132"
 sudo tee "$SUDOERS_FILE" > /dev/null << EOF
-# Passwordless systemctl for MQTT camera control (start/stop mediamtx, rtsp-camera, shutdown)
+# Passwordless systemctl for MQTT camera control (start/stop mediamtx, rtsp-camera, shutdown, reboot)
 $INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl start mediamtx.service, /bin/systemctl stop mediamtx.service, /bin/systemctl start rtsp-camera.service, /bin/systemctl stop rtsp-camera.service, /bin/systemctl restart rtsp-camera.service, /sbin/shutdown
 EOF
 sudo chmod 440 "$SUDOERS_FILE"
@@ -297,5 +336,5 @@ echo "  3. Start: sudo systemctl start mqtt-camera.service"
 echo "  4. Publish ON to cmd_topic/rtsp to start stream"
 echo ""
 echo "Spectrometer service is enabled at boot (starts when MQTT mode, not webserver)."
-echo "If raspberrypi_v4l2 was installed, reboot for the driver to load."
+echo "If raspberrypi_v4l2 was installed or I2C was enabled, reboot for changes to take effect."
 echo ""

@@ -5,9 +5,12 @@ Centralizes default paths used across spectrometer scripts.
 import json
 import os
 
-# Centralized default paths
-DEFAULT_ENV_CONFIG = os.environ.get("ENV_CONFIG", "/home/raspberry/env_config.json")
-DEFAULT_CAMERA_CONFIG = "/home/raspberry/camera_config.json"
+# Project root: parent of spectrometer package (resolves to repo root)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Centralized default paths (relative to project root)
+DEFAULT_ENV_CONFIG = os.environ.get("ENV_CONFIG", os.path.join(_PROJECT_ROOT, "env_config.json"))
+DEFAULT_CAMERA_CONFIG = os.path.join(_PROJECT_ROOT, "camera_config.json")
 
 
 def load_env(path=None):
