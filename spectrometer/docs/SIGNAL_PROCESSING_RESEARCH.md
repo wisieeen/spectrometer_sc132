@@ -82,6 +82,34 @@ Several signal processing techniques can significantly improve spectrometer perf
 - **Ease**: Low (implementation trivial) but **not recommended** without regularization — Wiener or RL are preferred.
 - **Weak signals**: **Harmful**. Uncontrolled noise amplification will obliterate weak signals. Do not use.
 
+#### 3.1.4 Additional Deconvolution Techniques (Beyond RL and Wiener)
+
+Research candidates for future implementation. All require PSF; same PSF format as RL/Wiener applies.
+
+
+| Technique                                | Type                   | Cost        | Weak-signal | Notes                                                                                                                                        |
+| ---------------------------------------- | ---------------------- | ----------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tikhonov (regularized least squares)** | Non-iterative, FFT     | O(N log N)  | Safer       | `result = IFFT(S·conj(H)/(                                                                                                                   |
+| **Landweber iteration**                  | Iterative              | O(N × iter) | Risky       | Steepest-descent form of Tikhonov. `x_{k+1} = x_k + α·H^T·(y - H·x_k)`. Step size α controls convergence. Can add positivity clamp.          |
+| **Van Cittert**                          | Iterative              | O(N × iter) | Risky       | `x_{k+1} = x_k + (y - H*x_k)`. Basic iterative; converges slowly; very noise-sensitive. Not recommended alone.                               |
+| **Jansson (constrained Van Cittert)**    | Iterative, constrained | O(N × iter) | Safer       | Van Cittert + relaxation function constraining values to [0, c]. Prior: non-negativity + max amplitude. Used in chromatography/spectroscopy. |
+| **Gold algorithm**                       | Iterative              | O(N × iter) | Medium      | Van Cittert with variable relaxation factor. Can eliminate linear instability in some instruments.                                           |
+
+
+**Implementation notes**:
+
+- **Tikhonov**: Trivial — same FFT structure as Wiener; only denominator differs. Add `tikhonov_deconvolve(λ)` alongside Wiener. No new deps.
+- **Landweber**: Use `np.convolve` (like RL) or FFT. Step size α ≈ 0.5–2.0; 20–50 iterations typical. Positivity: `x = np.clip(x, 0, None)` each iteration.
+- **Van Cittert**: `x += signal - np.convolve(x, psf, 'same')`. Few iterations (5–15); diverges with noise.
+- **Jansson**: Relaxation function `r(x) = 1 - 2·|x/c - 0.5|` constrains updates. Needs `c` (max amplitude) — estimate from `np.percentile(signal, 99)` or user param.
+- **Gold**: Variable relaxation; more complex. Lower priority.
+
+**Literature**: LAMOST spectral extraction comparison (Tikhonov, Landweber, RL most reliable); Jansson (1996) "Deconvolution of Images and Spectra"; Van Cittert (1931); STSci iterative deconvolution notes.
+
+**Recommendation for Pi Zero 2 W**: Tikhonov is the lowest-effort addition (single FFT, one param). Landweber and Jansson are worth prototyping if Tikhonov/RL/Wiener do not suffice for specific slit/SNR regimes.
+
+**Detailed elaboration**: See [DECONVOLUTION_TECHNIQUES_ELABORATION.md](DECONVOLUTION_TECHNIQUES_ELABORATION.md) for math, parameters, pros/cons, and implementation sketches for each technique.
+
 ---
 
 ### 3.2 Dark and Flat-Field Correction
@@ -243,17 +271,19 @@ Approximate times for N≈1000, single spectrum (order-of-magnitude):
 
 ### Weak-Signal Priority (when preserving near-noise signals)
 
-| Technique | Weak-signal impact | Recommendation |
-|-----------|--------------------|----------------|
-| Frame averaging | **Beneficial** | Use liberally; primary tool for weak signals |
-| Dark + flat correction | **Beneficial** | Always apply |
-| Baseline correction | **Risky** | Use conservative params; prefer SNIP or fit in empty regions |
-| Hot-pixel removal | **Generally safe** | Use high threshold (5–6× MAD) |
-| Wiener deconvolution | **Safer** | Prefer over Richardson–Lucy; tune regularization |
-| Richardson–Lucy | **Risky** | Few iterations; consider skipping at low SNR |
-| Savitzky–Golay | **Risky** | Small window (7–11), low polyorder |
-| Wavelet denoising | **Risky** | Soft threshold, lower multiplier; or skip |
-| Derivative spectroscopy | **Harmful** | Avoid when hunting weak signals |
+
+| Technique               | Weak-signal impact | Recommendation                                               |
+| ----------------------- | ------------------ | ------------------------------------------------------------ |
+| Frame averaging         | **Beneficial**     | Use liberally; primary tool for weak signals                 |
+| Dark + flat correction  | **Beneficial**     | Always apply                                                 |
+| Baseline correction     | **Risky**          | Use conservative params; prefer SNIP or fit in empty regions |
+| Hot-pixel removal       | **Generally safe** | Use high threshold (5–6× MAD)                                |
+| Wiener deconvolution    | **Safer**          | Prefer over Richardson–Lucy; tune regularization             |
+| Richardson–Lucy         | **Risky**          | Few iterations; consider skipping at low SNR                 |
+| Savitzky–Golay          | **Risky**          | Small window (7–11), low polyorder                           |
+| Wavelet denoising       | **Risky**          | Soft threshold, lower multiplier; or skip                    |
+| Derivative spectroscopy | **Harmful**        | Avoid when hunting weak signals                              |
+
 
 ---
 
@@ -300,5 +330,6 @@ For deconvolution to work, the instrument line shape (ILS) must be known or esti
 
 - **Created**: 2025-03-07 — Research phase; no code written.
 - **Updated**: 2025-03-07 — Added weak-signal impact notes for each technique; weak-signal priority table.
+- **Updated**: 2025-03-17 — Added §3.1.4: Tikhonov, Landweber, Van Cittert, Jansson, Gold deconvolution techniques.
 - **Status**: Ready for coder implementation planning.
 

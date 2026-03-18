@@ -15,6 +15,10 @@ Base path: `/api`
 | GET/POST | `/spectrometer/processing_wiener_enabled` | Wiener deconvolution |
 | GET/POST | `/spectrometer/processing_wiener_psf_sigma` | Wiener PSF sigma |
 | GET/POST | `/spectrometer/processing_wiener_regularization` | Wiener regularization |
+| GET/POST | `/spectrometer/processing_richardson_lucy_enabled` | Richardson–Lucy deconvolution |
+| GET/POST | `/spectrometer/processing_richardson_lucy_psf_sigma` | Richardson–Lucy PSF sigma (fallback) |
+| GET/POST | `/spectrometer/processing_richardson_lucy_psf_path` | Richardson–Lucy custom PSF path (.npy) |
+| GET/POST | `/spectrometer/processing_richardson_lucy_iterations` | Richardson–Lucy iterations (1–100) |
 | POST | `/spectrometer/preview` | Trigger preview |
 | GET | `/spectrometer/status` | Status, channels, processing |
 | GET | `/spectrometer/spectrum/{channel_id}` | Last spectrum JSON |
@@ -38,6 +42,13 @@ Base path: `/api`
 |--------|----------|-------------|
 | GET/POST | `/config/wifi` | WiFi credentials (SSID, password) |
 | GET/POST | `/config/mqtt` | MQTT broker config |
+
+## System
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/system/reboot` | Reboot the device |
+| POST | `/system/shutdown` | Shutdown the device |
 
 ## Spectrum Payload
 

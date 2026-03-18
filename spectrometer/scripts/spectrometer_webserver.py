@@ -22,7 +22,12 @@ _STATIC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "static")
 from lib.config import load_spectrometer_config, save_spectrometer_config
 from lib.env_config import load_env, load_camera_config
 from lib.spectrum import extract_line_profile, fit_calibration, compute_spectrum
-from lib.signal_processing import apply_dark_flat_frame, load_dark_flat, wiener_deconvolve
+from lib.signal_processing import (
+    apply_dark_flat_frame,
+    load_dark_flat,
+    wiener_deconvolve,
+    richardson_lucy_deconvolve,
+)
 from scripts.camera_capture import capture_frame, capture_frames_averaged
 
 app = Flask(__name__, static_folder=_STATIC_DIR, template_folder=os.path.join(os.path.dirname(_SCRIPT_DIR), "templates"))
@@ -49,6 +54,15 @@ def _get_processing_cfg(spec_cfg=None):
         wiener_regularization = max(0.0001, min(1.0, float(proc.get("wiener_regularization", 0.01))))
     except (TypeError, ValueError):
         wiener_regularization = 0.01
+    try:
+        richardson_lucy_iterations = max(1, min(100, int(proc.get("richardson_lucy_iterations", 15))))
+    except (TypeError, ValueError):
+        richardson_lucy_iterations = 15
+    try:
+        richardson_lucy_psf_sigma = max(0.5, min(20.0, float(proc.get("richardson_lucy_psf_sigma", 3.0))))
+    except (TypeError, ValueError):
+        richardson_lucy_psf_sigma = 3.0
+    richardson_lucy_psf_path = (proc.get("richardson_lucy_psf_path") or "").strip() or None
     return {
         "frame_average_n": frame_average_n,
         "dark_flat_enabled": bool(proc.get("dark_flat_enabled", False)),
@@ -57,6 +71,10 @@ def _get_processing_cfg(spec_cfg=None):
         "wiener_enabled": bool(proc.get("wiener_enabled", False)),
         "wiener_psf_sigma": wiener_psf_sigma,
         "wiener_regularization": wiener_regularization,
+        "richardson_lucy_enabled": bool(proc.get("richardson_lucy_enabled", False)),
+        "richardson_lucy_psf_sigma": richardson_lucy_psf_sigma,
+        "richardson_lucy_psf_path": richardson_lucy_psf_path,
+        "richardson_lucy_iterations": richardson_lucy_iterations,
     }
 
 
@@ -74,7 +92,7 @@ def _acquire_frame(spec_cfg, dark, flat):
     return frame
 
 
-def _process_frame_to_dict(frame, spec_cfg):
+def _process_frame_to_dict(frame, spec_cfg, dark=None):
     import numpy as np
     from datetime import datetime, timezone
 
@@ -106,11 +124,23 @@ def _process_frame_to_dict(frame, spec_cfg):
         intensities = extract_line_profile(frame, start, end, thickness)
         if len(intensities) == 0:
             continue
-        if proc["wiener_enabled"]:
+        if proc["richardson_lucy_enabled"]:
+            intensities = richardson_lucy_deconvolve(
+                intensities,
+                psf_sigma_px=proc["richardson_lucy_psf_sigma"],
+                num_iterations=proc["richardson_lucy_iterations"],
+                psf_path=proc.get("richardson_lucy_psf_path"),
+            )
+        elif proc["wiener_enabled"]:
+            dark_spec = None
+            if dark is not None and dark.ndim == 2:
+                dark_spec = extract_line_profile(dark, start, end, thickness)
             intensities = wiener_deconvolve(
                 intensities,
                 psf_sigma_px=proc["wiener_psf_sigma"],
                 regularization=proc["wiener_regularization"],
+                psf_path=proc.get("richardson_lucy_psf_path"),
+                dark_spectrum=dark_spec,
             )
         if cal and "coefficients" in cal:
             coeffs = np.array(cal["coefficients"])
@@ -144,7 +174,7 @@ def _capture_loop():
             proc = _get_processing_cfg(spec_cfg)
             dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
             frame = _acquire_frame(spec_cfg, dark, flat)
-            spectra = _process_frame_to_dict(frame, spec_cfg)
+            spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark)
             with _spectrum_lock:
                 _last_spectra.update(spectra)
         except Exception as e:
@@ -187,7 +217,7 @@ def api_spectrometer_single():
         proc = _get_processing_cfg(spec_cfg)
         dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
         frame = _acquire_frame(spec_cfg, dark, flat)
-        spectra = _process_frame_to_dict(frame, spec_cfg)
+        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark)
         with _spectrum_lock:
             _last_spectra.update(spectra)
         ch = next(iter(spectra.keys()), None)
@@ -286,6 +316,68 @@ def api_processing_wiener_regularization():
         return jsonify({"processing_wiener_regularization": v})
     proc = _get_processing_cfg()
     return jsonify({"processing_wiener_regularization": proc["wiener_regularization"]})
+
+
+@app.route("/api/spectrometer/processing_richardson_lucy_enabled", methods=["GET", "POST"])
+def api_processing_richardson_lucy_enabled():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        val = data.get("value", request.form.get("value", "false"))
+        enabled = str(val).lower() in ("true", "1", "on", "yes")
+        spec_cfg = load_spectrometer_config()
+        spec_cfg.setdefault("processing", {})["richardson_lucy_enabled"] = enabled
+        save_spectrometer_config(spec_cfg)
+        return jsonify({"processing_richardson_lucy_enabled": enabled})
+    proc = _get_processing_cfg()
+    return jsonify({"processing_richardson_lucy_enabled": proc["richardson_lucy_enabled"]})
+
+
+@app.route("/api/spectrometer/processing_richardson_lucy_psf_sigma", methods=["GET", "POST"])
+def api_processing_richardson_lucy_psf_sigma():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        val = data.get("value", request.form.get("value"))
+        try:
+            v = max(0.5, min(20.0, float(val or 3.0)))
+        except (ValueError, TypeError):
+            v = 3.0
+        spec_cfg = load_spectrometer_config()
+        spec_cfg.setdefault("processing", {})["richardson_lucy_psf_sigma"] = v
+        save_spectrometer_config(spec_cfg)
+        return jsonify({"processing_richardson_lucy_psf_sigma": v})
+    proc = _get_processing_cfg()
+    return jsonify({"processing_richardson_lucy_psf_sigma": proc["richardson_lucy_psf_sigma"]})
+
+
+@app.route("/api/spectrometer/processing_richardson_lucy_iterations", methods=["GET", "POST"])
+def api_processing_richardson_lucy_iterations():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        val = data.get("value", request.form.get("value"))
+        try:
+            v = max(1, min(100, int(val or 15)))
+        except (ValueError, TypeError):
+            v = 15
+        spec_cfg = load_spectrometer_config()
+        spec_cfg.setdefault("processing", {})["richardson_lucy_iterations"] = v
+        save_spectrometer_config(spec_cfg)
+        return jsonify({"processing_richardson_lucy_iterations": v})
+    proc = _get_processing_cfg()
+    return jsonify({"processing_richardson_lucy_iterations": proc["richardson_lucy_iterations"]})
+
+
+@app.route("/api/spectrometer/processing_richardson_lucy_psf_path", methods=["GET", "POST"])
+def api_processing_richardson_lucy_psf_path():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        val = data.get("value", request.form.get("value", ""))
+        path = str(val).strip() if val is not None else ""
+        spec_cfg = load_spectrometer_config()
+        spec_cfg.setdefault("processing", {})["richardson_lucy_psf_path"] = path or None
+        save_spectrometer_config(spec_cfg)
+        return jsonify({"processing_richardson_lucy_psf_path": path or None})
+    proc = _get_processing_cfg()
+    return jsonify({"processing_richardson_lucy_psf_path": proc.get("richardson_lucy_psf_path") or ""})
 
 
 @app.route("/api/spectrometer/preview", methods=["POST"])
@@ -533,6 +625,24 @@ def api_config_mqtt():
         "cmd_topic": mq.get("cmd_topic", ""),
         "state_topic": mq.get("state_topic", ""),
     })
+
+
+@app.route("/api/system/reboot", methods=["POST"])
+def api_system_reboot():
+    try:
+        subprocess.Popen(["sudo", "reboot"], start_new_session=True)
+        return jsonify({"status": "rebooting"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/system/shutdown", methods=["POST"])
+def api_system_shutdown():
+    try:
+        subprocess.Popen(["sudo", "shutdown", "-h", "now"], start_new_session=True)
+        return jsonify({"status": "shutting down"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/stream/url", methods=["GET"])

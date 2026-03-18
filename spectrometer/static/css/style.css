@@ -221,6 +221,48 @@ button:hover {
   background: var(--accent-hover);
 }
 
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  background: var(--accent);
+}
+
+.btn-start-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.spectrum-timer {
+  margin-left: 0.35rem;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  min-width: 1.6em;
+  padding: 0.15rem 0.35rem;
+  background: var(--border);
+  color: var(--text-secondary);
+  border-radius: 4px;
+}
+
+.btn-start-wrap.running .spectrum-timer {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+.api-status {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  min-height: 1.4em;
+  margin-bottom: 0.25rem;
+}
+
+.api-status.error {
+  color: var(--status-error, #c00);
+}
+
 .config-section {
   margin-bottom: 2rem;
 }

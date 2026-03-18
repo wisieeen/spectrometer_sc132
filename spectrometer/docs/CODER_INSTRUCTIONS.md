@@ -25,7 +25,7 @@ Concise implementation notes for spectrometer subproject. See [INDEX.md](INDEX.m
 - [x] `scripts/spectrometer_calibrate.py` – CLI for pairs, fit, coefficients
 - [x] `scripts/spectrometer_calibrate_ui.py` – interactive wizard: line selection, spectrum, calibration, save config (device with display)
 - [x] `scripts/spectrometer_service.py` – MQTT loop, capture, extract, publish (commands: start, stop, single, interval_ms, preview, processing_*)
-- [x] `lib/signal_processing/` – dark_flat, frame_average, wiener (Phase 1–2); each technique independent, MQTT-toggleable
+- [x] `lib/signal_processing/` – dark_flat, frame_average, wiener, richardson_lucy; each technique independent, MQTT-toggleable
 - [x] `scripts/spectrometer_webserver.py` – Flask REST API + web UI; runs spectrometer when webserver GPIO enabled
 - [x] `install/gpio_bootstrap.py` – GPIO read at boot, mode/flag files, network AP/STA config
 
@@ -35,7 +35,7 @@ For line (x1,y1)→(x2,y2), thickness t: sample N points along line; at each poi
 
 ## Signal Processing (lib/signal_processing/)
 
-Each technique is independent. Toggle via MQTT: `cmd/processing_frame_average_n`, `cmd/processing_dark_flat_enabled`. Config: `spectrometer_config.json` → `processing`. Dark/flat calibration: see `docs/DARK_FLAT_CALIBRATION.md`.
+Each technique is independent. Toggle via MQTT: `cmd/processing_frame_average_n`, `cmd/processing_dark_flat_enabled`, `cmd/processing_wiener_enabled`, `cmd/processing_richardson_lucy_enabled`. Config: `spectrometer_config.json` → `processing`. Richardson–Lucy and Wiener are mutually exclusive (RL takes precedence). Dark/flat calibration: see `docs/DARK_FLAT_CALIBRATION.md`. Richardson–Lucy: see `docs/RICHARDSON_LUCY.md`.
 
 ## env_config Paths
 

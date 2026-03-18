@@ -48,17 +48,15 @@ def extract_line_profile(
     for i in range(length):
         cx = x1 + i * dx
         cy = y1 + i * dy
-        strip_sum = 0.0
-        count = 0
+        strip_values = []
         for j in range(-half_t, half_t + 1):
             sx = int(cx + j * px)
             sy = int(cy + j * py)
             if 0 <= sx < w and 0 <= sy < h:
-                strip_sum += frame[sy, sx]
-                count += 1
-        intensities.append(strip_sum / count if count > 0 else 0.0)
+                strip_values.append(frame[sy, sx])
+        intensities.append(float(np.mean(strip_values)) if strip_values else 0.0)
 
-    return np.array(intensities)
+    return np.array(intensities, dtype=np.float64)
 
 
 def fit_calibration(

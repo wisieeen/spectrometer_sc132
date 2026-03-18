@@ -48,6 +48,8 @@ Quick reference to all documentation files. Links are relative to this file.
 | -------------------------------------------------------------- | ------------------------------------------------------------- |
 | [CODER_INSTRUCTIONS.md](CODER_INSTRUCTIONS.md)                 | Tech stack, constraints, checklist, optical tools             |
 | [SIGNAL_PROCESSING_RESEARCH.md](SIGNAL_PROCESSING_RESEARCH.md) | Research: deconvolution, dark/flat, frame avg, baseline, etc. |
+| [DECONVOLUTION_TECHNIQUES_ELABORATION.md](DECONVOLUTION_TECHNIQUES_ELABORATION.md) | Deep dive: Tikhonov, Landweber, Van Cittert, Jansson, Gold |
+| [RICHARDSON_LUCY.md](RICHARDSON_LUCY.md)                       | Richardson–Lucy deconvolution: params, custom PSF, measure_psf.py |
 
 
 ### Optical Design

@@ -492,6 +492,7 @@ def main():
             t = int(text.strip())
             if 1 <= t <= 31:
                 thickness = t
+                refresh()
         except ValueError:
             pass
 

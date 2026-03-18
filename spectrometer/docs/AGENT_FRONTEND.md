@@ -16,6 +16,10 @@ Instructions for agents building Home Assistant or TypeScript/React frontend. Se
 | `lab/spectrometer/cmd/processing_wiener_enabled` | `true` / `false` | Enable Wiener deconvolution. Persisted to config. |
 | `lab/spectrometer/cmd/processing_wiener_psf_sigma` | e.g. `3.0` | Gaussian PSF sigma (pixels). 0.5–20. Persisted. |
 | `lab/spectrometer/cmd/processing_wiener_regularization` | e.g. `0.01` | Wiener regularization. 0.0001–1. Persisted. |
+| `lab/spectrometer/cmd/processing_richardson_lucy_enabled` | `true` / `false` | Enable Richardson–Lucy deconvolution. Persisted to config. |
+| `lab/spectrometer/cmd/processing_richardson_lucy_psf_sigma` | e.g. `3.0` | Richardson–Lucy PSF sigma (fallback). 0.5–20. Persisted. |
+| `lab/spectrometer/cmd/processing_richardson_lucy_psf_path` | e.g. `/path/to/psf.npy` | Richardson–Lucy custom PSF path (.npy). Empty = use Gaussian. Persisted. |
+| `lab/spectrometer/cmd/processing_richardson_lucy_iterations` | e.g. `15` | Richardson–Lucy iterations. 1–100. Persisted. |
 | `lab/spectrometer/cmd/preview` | (empty) | Run spectrometer_preview.py; saves frame to `/tmp/spectrometer_preview.png` |
 | `lab/spectrometer/state/spectrum/{channel_id}` | JSON | Full spectrum for channel |
 | `lab/spectrometer/state/status` | `idle` / `running` | Service status |
@@ -25,6 +29,10 @@ Instructions for agents building Home Assistant or TypeScript/React frontend. Se
 | `lab/spectrometer/state/processing_wiener_enabled` | `true` / `false` | Current Wiener enabled state |
 | `lab/spectrometer/state/processing_wiener_psf_sigma` | e.g. `3.0` | Current Wiener PSF sigma |
 | `lab/spectrometer/state/processing_wiener_regularization` | e.g. `0.01` | Current Wiener regularization |
+| `lab/spectrometer/state/processing_richardson_lucy_enabled` | `true` / `false` | Current Richardson–Lucy enabled state |
+| `lab/spectrometer/state/processing_richardson_lucy_psf_sigma` | e.g. `3.0` | Current Richardson–Lucy PSF sigma |
+| `lab/spectrometer/state/processing_richardson_lucy_psf_path` | e.g. `/path/to/psf.npy` | Current Richardson–Lucy custom PSF path |
+| `lab/spectrometer/state/processing_richardson_lucy_iterations` | e.g. `15` | Current Richardson–Lucy iterations |
 
 Topics configurable via `env_config.json` → `spectrometer.cmd_topic`, `spectrometer.state_topic`.
 
@@ -39,7 +47,7 @@ Topics configurable via `env_config.json` → `spectrometer.cmd_topic`, `spectro
   "meta": {
     "shutter_us": 100000,
     "gain_db": 4.0,
-    "processing": { "frame_average_n": 4, "dark_flat_applied": true, "wiener_applied": true }
+    "processing": { "frame_average_n": 4, "dark_flat_applied": true, "wiener_applied": true, "richardson_lucy_applied": false }
   }
 }
 ```
@@ -66,14 +74,18 @@ Topics configurable via `env_config.json` → `spectrometer.cmd_topic`, `spectro
       "coefficients": [c2, c1, c0]
     }
   ],
-  "processing": {
+    "processing": {
     "frame_average_n": 1,
     "dark_flat_enabled": false,
     "dark_frame_path": "/path/to/dark.npy",
     "flat_frame_path": "/path/to/flat.npy",
     "wiener_enabled": false,
     "wiener_psf_sigma": 3.0,
-    "wiener_regularization": 0.01
+    "wiener_regularization": 0.01,
+    "richardson_lucy_enabled": false,
+    "richardson_lucy_psf_sigma": 3.0,
+    "richardson_lucy_psf_path": null,
+    "richardson_lucy_iterations": 15
   }
 }
 ```

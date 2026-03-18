@@ -29,7 +29,10 @@
       btn.classList.add('active');
       const panel = document.getElementById('tab-' + tab);
       if (panel) panel.classList.add('active');
-      if (tab === 'spectrometer') drawSpectrum();
+      if (tab === 'spectrometer') {
+        drawSpectrum();
+        loadCameraConfigForSpectrometer();
+      }
     });
   });
 
@@ -122,7 +125,7 @@
     }
 
     ctx.strokeStyle = line;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 0.5;
     ctx.beginPath();
     for (let i = 0; i < wl.length; i++) {
       const x = chartDims.left + ((wl[i] - wlMin) / (wlMax - wlMin)) * chartDims.width;
@@ -218,6 +221,16 @@
   window.addEventListener('resize', () => drawSpectrum());
 
   // --- API helpers ---
+  function showStatus(msg, isError = false) {
+    const el = document.getElementById('apiStatus');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.toggle('error', isError);
+    if (!isError && msg) {
+      setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 3000);
+    }
+  }
+
   async function api(method, path, body) {
     const opts = { method };
     if (body) {
@@ -225,60 +238,220 @@
       opts.body = JSON.stringify(body);
     }
     const r = await fetch(API + path, opts);
-    return r.json().catch(() => ({}));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const err = data.error || data.message || `HTTP ${r.status}`;
+      throw new Error(err);
+    }
+    return data;
+  }
+
+  // --- Spectrometer state ---
+  let lastSpectrumUpdateTime = 0;
+  let isRunning = false;
+
+  function updateButtonStates() {
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+    const wrap = document.querySelector('.btn-start-wrap');
+    if (btnStart) btnStart.disabled = isRunning;
+    if (btnStop) btnStop.disabled = !isRunning;
+    wrap?.classList.toggle('running', isRunning);
+  }
+
+  function updateSpectrumTimer() {
+    const el = document.getElementById('spectrumTimer');
+    if (!el) return;
+    if (!isRunning || lastSpectrumUpdateTime === 0) {
+      el.textContent = '--';
+      return;
+    }
+    const sec = Math.floor((Date.now() - lastSpectrumUpdateTime) / 1000);
+    el.textContent = String(sec).padStart(2, '0');
   }
 
   // --- Spectrometer controls ---
-  document.getElementById('btnStart')?.addEventListener('click', () => api('POST', '/spectrometer/start'));
-  document.getElementById('btnStop')?.addEventListener('click', () => api('POST', '/spectrometer/stop'));
-  document.getElementById('btnSingle')?.addEventListener('click', async () => {
-    const s = await api('POST', '/spectrometer/single');
-    if (s.wavelengths_nm) {
-      spectrumData = s;
-      drawSpectrum();
+  document.getElementById('btnStart')?.addEventListener('click', async () => {
+    try {
+      await api('POST', '/spectrometer/start');
+      isRunning = true;
+      updateButtonStates();
+      schedulePoll();
+      showStatus('Continuous acquisition started.');
+    } catch (e) {
+      showStatus('Start failed: ' + (e.message || 'Unknown error'), true);
     }
   });
-  document.getElementById('btnPreview')?.addEventListener('click', () => api('POST', '/spectrometer/preview'));
+
+  document.getElementById('btnStop')?.addEventListener('click', async () => {
+    try {
+      await api('POST', '/spectrometer/stop');
+      isRunning = false;
+      updateButtonStates();
+      schedulePoll();
+      showStatus('Continuous acquisition stopped.');
+    } catch (e) {
+      showStatus('Stop failed: ' + (e.message || 'Unknown error'), true);
+    }
+  });
+
+  document.getElementById('btnSingle')?.addEventListener('click', async () => {
+    try {
+      const s = await api('POST', '/spectrometer/single');
+      if (s.wavelengths_nm) {
+        spectrumData = s;
+        lastSpectrumUpdateTime = Date.now();
+        drawSpectrum();
+        showStatus('Single spectrum acquired.');
+      } else {
+        showStatus('No spectrum data returned.', true);
+      }
+    } catch (e) {
+      showStatus('Single failed: ' + (e.message || 'Unknown error'), true);
+    }
+  });
+
+  document.getElementById('btnPreview')?.addEventListener('click', async () => {
+    try {
+      await api('POST', '/spectrometer/preview');
+      showStatus('Preview started.');
+    } catch (e) {
+      showStatus('Preview failed: ' + (e.message || 'Unknown error'), true);
+    }
+  });
+
+  document.getElementById('btnSaveCsv')?.addEventListener('click', () => {
+    const wl = spectrumData.wavelengths_nm || [];
+    const ints = spectrumData.intensities || [];
+    if (wl.length === 0) {
+      showStatus('No spectrum data to save.', true);
+      return;
+    }
+    const rows = ['wavelength_nm,intensity'];
+    for (let i = 0; i < wl.length; i++) {
+      rows.push(`${wl[i]},${ints[i] ?? ''}`);
+    }
+    const csv = rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `spectrum_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showStatus('Spectrum saved as CSV.');
+  });
+
+  async function apiSilent(method, path, body) {
+    try {
+      await api(method, path, body);
+    } catch (e) {
+      showStatus(e.message || 'Request failed', true);
+    }
+  }
 
   document.getElementById('intervalMs')?.addEventListener('change', (e) => {
-    api('POST', '/spectrometer/interval_ms', { value: e.target.value });
+    apiSilent('POST', '/spectrometer/interval_ms', { value: e.target.value });
   });
 
   document.getElementById('frameAverageN')?.addEventListener('change', (e) => {
-    api('POST', '/spectrometer/processing_frame_average_n', { value: e.target.value });
+    apiSilent('POST', '/spectrometer/processing_frame_average_n', { value: e.target.value });
   });
   document.getElementById('darkFlatEnabled')?.addEventListener('change', (e) => {
-    api('POST', '/spectrometer/processing_dark_flat_enabled', { value: e.target.checked });
+    apiSilent('POST', '/spectrometer/processing_dark_flat_enabled', { value: e.target.checked });
   });
   document.getElementById('wienerEnabled')?.addEventListener('change', (e) => {
-    api('POST', '/spectrometer/processing_wiener_enabled', { value: e.target.checked });
+    apiSilent('POST', '/spectrometer/processing_wiener_enabled', { value: e.target.checked });
   });
   document.getElementById('wienerPsfSigma')?.addEventListener('change', (e) => {
-    api('POST', '/spectrometer/processing_wiener_psf_sigma', { value: e.target.value });
+    apiSilent('POST', '/spectrometer/processing_wiener_psf_sigma', { value: e.target.value });
   });
   document.getElementById('wienerReg')?.addEventListener('change', (e) => {
-    api('POST', '/spectrometer/processing_wiener_regularization', { value: e.target.value });
+    apiSilent('POST', '/spectrometer/processing_wiener_regularization', { value: e.target.value });
+  });
+  document.getElementById('richardsonLucyEnabled')?.addEventListener('change', (e) => {
+    apiSilent('POST', '/spectrometer/processing_richardson_lucy_enabled', { value: e.target.checked });
+  });
+  document.getElementById('richardsonLucyPsfSigma')?.addEventListener('change', (e) => {
+    apiSilent('POST', '/spectrometer/processing_richardson_lucy_psf_sigma', { value: e.target.value });
+  });
+  document.getElementById('richardsonLucyIterations')?.addEventListener('change', (e) => {
+    apiSilent('POST', '/spectrometer/processing_richardson_lucy_iterations', { value: e.target.value });
+  });
+  document.getElementById('richardsonLucyPsfPath')?.addEventListener('change', (e) => {
+    apiSilent('POST', '/spectrometer/processing_richardson_lucy_psf_path', { value: e.target.value });
   });
 
-  // --- Poll spectrum ---
-  async function pollSpectrum() {
-    const st = await api('GET', '/spectrometer/status');
-    if (st.channels && st.channels[0]) {
-      const s = await api('GET', '/spectrometer/spectrum/' + st.channels[0]);
-      if (s.wavelengths_nm) {
-        spectrumData = s;
-        drawSpectrum();
-      }
+  document.getElementById('spectrometerShutter')?.addEventListener('change', (e) => {
+    apiSilent('POST', '/camera/shutter', { value: e.target.value });
+  });
+  document.getElementById('spectrometerGain')?.addEventListener('change', (e) => {
+    apiSilent('POST', '/camera/gain', { value: e.target.value });
+  });
+
+  async function loadCameraConfigForSpectrometer() {
+    try {
+      const cam = await api('GET', '/camera/config');
+      const shutterEl = document.getElementById('spectrometerShutter');
+      const gainEl = document.getElementById('spectrometerGain');
+      if (shutterEl) shutterEl.value = cam.shutter || 4100;
+      if (gainEl) gainEl.value = cam.gain ?? 1;
+    } catch (e) {
+      /* ignore */
     }
-    document.getElementById('intervalMs').value = st.interval_ms || 1000;
-    document.getElementById('frameAverageN').value = st.processing?.frame_average_n ?? 1;
-    document.getElementById('darkFlatEnabled').checked = st.processing?.dark_flat_enabled ?? false;
-    document.getElementById('wienerEnabled').checked = st.processing?.wiener_enabled ?? false;
-    document.getElementById('wienerPsfSigma').value = st.processing?.wiener_psf_sigma ?? 3;
-    document.getElementById('wienerReg').value = st.processing?.wiener_regularization ?? 0.01;
   }
-  setInterval(pollSpectrum, 2000);
+
+  // --- Poll spectrum ---
+  const POLL_INTERVAL_RUNNING = 2000;
+  const POLL_INTERVAL_IDLE = 10000;
+  let pollTimeoutId = null;
+
+  function schedulePoll() {
+    if (pollTimeoutId) clearTimeout(pollTimeoutId);
+    const interval = isRunning ? POLL_INTERVAL_RUNNING : POLL_INTERVAL_IDLE;
+    pollTimeoutId = setTimeout(() => {
+      pollSpectrum();
+    }, interval);
+  }
+
+  async function pollSpectrum() {
+    try {
+      const st = await api('GET', '/spectrometer/status');
+      isRunning = st.status === 'running';
+      updateButtonStates();
+
+      if (isRunning && st.channels && st.channels[0]) {
+        const s = await api('GET', '/spectrometer/spectrum/' + st.channels[0]);
+        if (s.wavelengths_nm) {
+          spectrumData = s;
+          lastSpectrumUpdateTime = Date.now();
+          drawSpectrum();
+        }
+      }
+
+      document.getElementById('intervalMs').value = st.interval_ms || 1000;
+      document.getElementById('frameAverageN').value = st.processing?.frame_average_n ?? 1;
+      document.getElementById('darkFlatEnabled').checked = st.processing?.dark_flat_enabled ?? false;
+      document.getElementById('wienerEnabled').checked = st.processing?.wiener_enabled ?? false;
+      document.getElementById('wienerPsfSigma').value = st.processing?.wiener_psf_sigma ?? 3;
+      document.getElementById('wienerReg').value = st.processing?.wiener_regularization ?? 0.01;
+      document.getElementById('richardsonLucyEnabled').checked = st.processing?.richardson_lucy_enabled ?? false;
+      document.getElementById('richardsonLucyPsfSigma').value = st.processing?.richardson_lucy_psf_sigma ?? 3;
+      document.getElementById('richardsonLucyIterations').value = st.processing?.richardson_lucy_iterations ?? 15;
+      document.getElementById('richardsonLucyPsfPath').value = st.processing?.richardson_lucy_psf_path ?? '';
+    } catch (e) {
+      showStatus('Status fetch failed: ' + (e.message || 'Unknown error'), true);
+    }
+    schedulePoll();
+  }
+
   pollSpectrum();
+  loadCameraConfigForSpectrometer();
+
+  // Timer tick: update seconds-since-last-spectrum every second when running
+  setInterval(() => {
+    updateSpectrumTimer();
+  }, 1000);
 
   // --- Video ---
   const video = document.getElementById('videoStream');
@@ -347,6 +520,26 @@
     const pass = document.getElementById('mqttPass').value;
     await api('POST', '/config/mqtt', { broker, port, user, pass });
     alert('MQTT config saved.');
+  });
+
+  document.getElementById('btnReboot')?.addEventListener('click', async () => {
+    if (!confirm('Reboot the device now?')) return;
+    try {
+      await api('POST', '/system/reboot');
+      showStatus('Rebooting...');
+    } catch (e) {
+      showStatus('Reboot failed: ' + (e.message || 'Unknown error'), true);
+    }
+  });
+
+  document.getElementById('btnShutdown')?.addEventListener('click', async () => {
+    if (!confirm('Shutdown the device now?')) return;
+    try {
+      await api('POST', '/system/shutdown');
+      showStatus('Shutting down...');
+    } catch (e) {
+      showStatus('Shutdown failed: ' + (e.message || 'Unknown error'), true);
+    }
   });
 
   (async () => {
