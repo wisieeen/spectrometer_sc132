@@ -41,12 +41,20 @@ if [ "$MODE" = "full" ]; then
   fi
 fi
 
-# Enforce firewall based on the *current* active connection.
-# This is more reliable than depending on a single dispatcher event payload.
-if [ "$(active_conn_on_wlan0)" = "$CON_NAME" ]; then
-  allow_incoming_wlan0
+# Firewall + AP teardown: use both active connection and AP_FLAG so STA mode
+# never leaves INPUT ACCEPT on wlan0 while a stale spectrometer-ap is up.
+active="$(active_conn_on_wlan0)"
+if [ "$active" = "$CON_NAME" ]; then
+  if [ -f "$AP_FLAG" ]; then
+    allow_incoming_wlan0
+  else
+    if [ "$MODE" = "full" ]; then
+      nmcli con down "$CON_NAME" 2>/dev/null || true
+    fi
+    delete_allow_incoming_wlan0
+  fi
 else
-  if [ "$MODE" = "full" ]; then
+  if [ "$MODE" = "full" ] && [ ! -f "$AP_FLAG" ]; then
     nmcli con down "$CON_NAME" 2>/dev/null || true
   fi
   delete_allow_incoming_wlan0

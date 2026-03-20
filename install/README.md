@@ -31,7 +31,7 @@ chmod +x install/install.sh
 
 **AP mode:** Uses NetworkManager (nmcli) on Bookworm. Set WiFi country once: `sudo raspi-config nonint do_wifi_country US` (or your country). AP settings (SSID, passphrase, channel) are in `env_config.json` under `wifi`.
 
-**WiFi credentials:** When saving via webserver in STA mode, `apply_wifi_credentials.sh` copies `wifi_credentials.conf` to wpa_supplicant and restarts it. Sudoers allows the install user to run this script.
+**WiFi credentials:** When saving via webserver in STA mode, `apply_wifi_credentials.sh` applies credentials with `nmcli` (when NetworkManager is active), marks that profile as preferred autoconnect, and demotes other STA profiles to prevent reconnecting to an older network after reboot. Sudoers allows the install user to run this script.
 
 **Prerequisites:**
 - Raspberry Pi OS (Debian-based)

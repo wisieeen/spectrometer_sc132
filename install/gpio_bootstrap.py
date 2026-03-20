@@ -184,32 +184,6 @@ def _nm_is_active():
     return (r.stdout or "").strip() == "active"
 
 
-def _nm_activate_ap():
-    """Reload NM connection files and bring up the AP if NM is already running.
-
-    The NM dispatcher (90-spectrometer-ap) handles iptables INPUT allow
-    after NM finishes its own firewall setup.
-    """
-    if not _nm_is_active():
-        return
-    subprocess.run(["nmcli", "con", "reload"], check=False, timeout=10, capture_output=True)
-    subprocess.run(
-        ["nmcli", "con", "up", NM_AP_CON_NAME],
-        check=False, timeout=15, capture_output=True,
-    )
-
-
-def _nm_deactivate_ap():
-    """Bring down the AP connection if NM is already running."""
-    if not _nm_is_active():
-        return
-    subprocess.run(
-        ["nmcli", "con", "down", NM_AP_CON_NAME],
-        check=False, timeout=10, capture_output=True,
-    )
-    subprocess.run(["nmcli", "con", "reload"], check=False, timeout=10, capture_output=True)
-
-
 def _cleanup_legacy_ap_config():
     """Remove artifacts from the old hostapd/dnsmasq AP approach."""
     _systemctl("stop", "hostapd.service")
@@ -255,32 +229,29 @@ def _cleanup_legacy_ap_config():
 def configure_network_ap(wifi_cfg):
     """Configure AP mode via NetworkManager connection file.
 
-    If NM hasn't started yet: write the .nmconnection with autoconnect=true;
-    NM will activate it when it starts.
-    If NM is already running: write the file, reload, and explicitly activate.
+    Writes spectrometer-ap.nmconnection with autoconnect=true and creates the
+    AP flag. NetworkManager's ExecStartPost hook (nm_ap_sta_hook.sh) reloads
+    and brings the connection up after NM starts; the dispatcher only adjusts
+    firewall rules to avoid reconnect loops.
     """
     try:
         _cleanup_legacy_ap_config()
         _write_ap_nmconnection(wifi_cfg, autoconnect=True)
         open(AP_FLAG, "a").close()
-        _nm_activate_ap()
-    except Exception as e:
-        if os.environ.get("DEBUG"):
-            print(f"AP config error: {e}", file=sys.stderr)
+    except Exception:
+        pass
 
 
-def configure_network_sta(wifi_cfg):
-    """Configure STA mode: deactivate and disable AP connection, let NM handle STA."""
+def configure_network_sta(_wifi_cfg):
+    """Configure STA mode: disable AP autoconnect, remove AP flag; NM hook downs AP."""
     try:
-        _nm_deactivate_ap()
         _set_ap_autoconnect(False)
         try:
             os.remove(AP_FLAG)
         except FileNotFoundError:
             pass
-    except Exception as e:
-        if os.environ.get("DEBUG"):
-            print(f"STA config error: {e}", file=sys.stderr)
+    except Exception:
+        pass
 
 
 RECOVERY_TRIGGER_NAMES = ("spectrometer-network-recovery", "spectrometer-network-recovery.txt")
@@ -400,12 +371,8 @@ def main():
                 configure_network_sta(wifi_cfg)
         except Exception as e:
             errors.append(str(e))
-            if os.environ.get("DEBUG"):
-                print(f"spectrometer-bootstrap: {e}", file=sys.stderr)
 
     _log_diagnostics(mode, wifi_ap, skip_network, errors)
-    if os.environ.get("DEBUG"):
-        print(f"spectrometer-bootstrap: {mode}", file=sys.stderr)
     return 0
 
 

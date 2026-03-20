@@ -34,8 +34,9 @@ if [ -f /run/spectrometer-ap-enabled ]; then
 fi
 
 # Parse SSID and password from wifi_credentials.conf (simple extraction)
-SSID=$(grep 'ssid=' "$CREDS" 2>/dev/null | head -1 | sed 's/.*ssid="\([^"]*\)".*/\1/')
-PSK=$(grep 'psk=' "$CREDS" 2>/dev/null | head -1 | sed 's/.*psk="\([^"]*\)".*/\1/')
+# Also normalize Windows line endings (tr -d '\r') to avoid SSID mismatches.
+SSID="$(grep 'ssid=' "$CREDS" 2>/dev/null | head -1 | sed 's/.*ssid="\([^"]*\)".*/\1/' | tr -d '\r' | sed 's/[[:space:]]*$//')"
+PSK="$(grep 'psk=' "$CREDS" 2>/dev/null | head -1 | sed 's/.*psk="\([^"]*\)".*/\1/' | tr -d '\r')"
 
 if [ -z "$SSID" ]; then
     _log "=== WiFi save FAIL: could not parse SSID from wifi_credentials.conf ==="
@@ -45,12 +46,57 @@ fi
 # On Bookworm/Trixie, NetworkManager manages WiFi - wpa_supplicant.conf is ignored
 if systemctl is-active NetworkManager >/dev/null 2>&1; then
     _log "=== WiFi save $(date -Iseconds): using nmcli (NetworkManager) ==="
-    if nmcli device wifi connect "$SSID" password "$PSK" 2>/dev/null; then
-        _log "WiFi save result: success (nmcli)"
-    else
-        _log "WiFi save result: FAIL (nmcli) - check SSID/password"
-        exit 1
+    CON_NAME_STA="spectrometer-sta"
+
+    # Deterministic STA profile:
+    # - explicitly set wifi-sec.key-mgmt and wifi-sec.psk
+    # - ensure only this profile can autoconnect
+    #
+    # This avoids failures/edge cases from `nmcli device wifi connect ...`
+    # where NM may not create a complete security section.
+    EXIST="$(nmcli -t -f NAME connection show "$CON_NAME_STA" 2>/dev/null | head -n1 | tr -d '\r')"
+    EXIST_TYPE="$(nmcli -t -f TYPE connection show "$CON_NAME_STA" 2>/dev/null | head -n1 | tr -d '\r')"
+
+    if [ -n "$EXIST" ] && [ "$EXIST_TYPE" != "802-11-wireless" ]; then
+        nmcli connection delete "$CON_NAME_STA" 2>&1 | head -n1 | tr -d '\r' >/dev/null 2>&1 || true
+        EXIST=""
     fi
+
+    if [ -z "$EXIST" ]; then
+        ADD_OUT="$(nmcli connection add type wifi ifname wlan0 con-name "$CON_NAME_STA" \
+            ssid "$SSID" \
+            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" \
+            connection.autoconnect yes connection.autoconnect-priority 200 \
+            ipv4.method auto ipv6.method ignore 2>&1 || true)"
+        _log "WiFi save: created '$CON_NAME_STA' (first line: $(printf '%s' "$ADD_OUT" | head -n1 | tr -d '\r'))"
+    else
+        MOD_OUT="$(nmcli connection modify "$CON_NAME_STA" \
+            ssid "$SSID" \
+            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" \
+            connection.autoconnect yes connection.autoconnect-priority 200 2>&1 || true)"
+        _log "WiFi save: updated '$CON_NAME_STA' (first line: $(printf '%s' "$MOD_OUT" | head -n1 | tr -d '\r'))"
+    fi
+
+    # Demote other STA profiles so reboot does not jump back to previously used WiFi.
+    while IFS=':' read -r NAME TYPE; do
+        [ -z "$NAME" ] && continue
+        [ "$TYPE" = "802-11-wireless" ] || continue
+        [ "$NAME" = "$CON_NAME_STA" ] && continue
+        [ "$NAME" = "spectrometer-ap" ] && continue
+        nmcli connection modify "$NAME" connection.autoconnect no connection.autoconnect-priority 0 2>&1 | head -n1 >/dev/null 2>&1 || true
+    done < <(nmcli -t -f NAME,TYPE connection show 2>/dev/null)
+
+    # Apply immediately (best effort; reboot should be deterministic anyway).
+    UP_OUT="$(nmcli connection up "$CON_NAME_STA" 2>&1 || true)"
+    _log "WiFi save result: connection up (first line: $(printf '%s' "$UP_OUT" | head -n1 | tr -d '\r'))"
+
+    _log "WiFi save nmcli profiles (name|autoconnect|prio):"
+    nmcli -t -f NAME,connection.autoconnect,connection.autoconnect-priority connection show 2>/dev/null | \
+      while IFS=':' read -r N AC PR; do
+        T="$(nmcli -t -f TYPE connection show "$N" 2>/dev/null | head -n1 | tr -d '\r')"
+        [ "$T" = "802-11-wireless" ] || continue
+        _log "  $N|$AC|$PR"
+      done
 else
     _log "=== WiFi save $(date -Iseconds): using wpa_supplicant ==="
     cp "$CREDS" "$STA_PATH"

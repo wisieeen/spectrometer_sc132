@@ -1,5 +1,7 @@
 # AP Mode Research: Why AP Reverts to STA
 
+> **Current install (Bookworm):** AP is a NetworkManager Wi‑Fi profile (`spectrometer-ap.nmconnection`), not hostapd. Bootstrap + `nm_ap_sta_hook.sh` (NM `ExecStartPost`) + dispatcher `90-spectrometer-ap` (`firewall-only`) implement switching. Sections below remain useful background on single-radio conflicts.
+
 ## Summary of User Reports
 
 Other Raspberry Pi users report similar issues:
@@ -107,6 +109,8 @@ ls /etc/NetworkManager/system-connections/
 
 ---
 
-## Implemented Fix
+## Implemented Fix (this repo)
 
-The bootstrap now creates `/etc/NetworkManager/conf.d/99-spectrometer-ap.conf` when in AP mode (Bookworm/Trixie). This tells NetworkManager to not manage wlan0, so hostapd can use it. When switching to STA mode, the file is removed. Works on both Bookworm and Trixie.
+- Bootstrap writes `/etc/NetworkManager/system-connections/spectrometer-ap.nmconnection` (AP) or sets `autoconnect=false` and removes `/run/spectrometer-ap-enabled` (STA).
+- `spectrometer-nm-ap-sta-hook.sh` runs after NetworkManager starts (`ExecStartPost`) to `reload` / `con up` the AP when the flag exists, and applies/removes the iptables INPUT rule on `wlan0`.
+- Dispatcher `90-spectrometer-ap` calls the hook with `firewall-only` so link events do not repeatedly `nmcli con up/down` (which caused ~10s disconnect loops).

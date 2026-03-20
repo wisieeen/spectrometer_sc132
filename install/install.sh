@@ -31,7 +31,7 @@ sudo apt update
 sudo apt install -y ffmpeg v4l-utils jq python3 python3-venv python3-full
 
 # AP mode uses NetworkManager (nmcli) on Bookworm — no hostapd/dnsmasq needed
-# iptables for spectrometer-ap-firewall (allow incoming on wlan0)
+# iptables: used by spectrometer-nm-ap-sta-hook.sh (INPUT ACCEPT on wlan0 in AP mode)
 sudo apt install -y iptables 2>/dev/null || true
 
 # --- 2. Python virtual environment ---
@@ -221,7 +221,7 @@ for svc in spectrometer-unmask-hostapd.service spectrometer-ap-ip.service; do
   sudo rm -f "/etc/systemd/system/$svc"
 done
 
-# Clean up old firewall service (replaced by NM dispatcher)
+# Clean up old firewall unit (superseded by nm hook + dispatcher firewall-only path)
 sudo systemctl disable spectrometer-ap-firewall.service 2>/dev/null || true
 sudo rm -f /etc/systemd/system/spectrometer-ap-firewall.service
 
