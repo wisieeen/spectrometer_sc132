@@ -20,6 +20,15 @@ from lib.spectrum import extract_line_profile, fit_calibration
 
 
 def _default_image_path():
+    """Choose a default preview image path to load.
+
+    Inputs:
+        None (checks known candidate paths on disk).
+    Output:
+        File path string to an existing image if found; otherwise returns the first candidate path.
+    Transformation:
+        Iterates over `candidates` and returns the first one that exists as a file.
+    """
     candidates = [
         "spectrometer_preview.png",
         "/tmp/spectrometer_preview.png",
@@ -31,11 +40,37 @@ def _default_image_path():
 
 
 def _default_config_path():
+    """Choose a default output config path for calibration results.
+
+    Inputs:
+        None (derives from script directory).
+    Output:
+        File path string pointing to `spectrometer_config.json` in the project root.
+    Transformation:
+        Computes `script_dir` and then returns `os.path.join(project_root, "spectrometer_config.json")`.
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(os.path.dirname(script_dir), "spectrometer_config.json")
 
 
 def main():
+    """Interactive calibration wizard entrypoint (GUI with matplotlib).
+
+    Inputs:
+        Command-line args:
+        - `--image`: optional path to the preview image
+        - `--config`: optional output config path
+        - `--channel-id`: channel id to update in the config
+    Output:
+        Saves updated spectrometer config on “Save” and updates on-screen displays while interacting.
+    Transformation:
+        Loads the preview image + existing config (if present), initializes channel/line/calibration state,
+        renders the UI, and wires callbacks for:
+        - selecting line endpoints on the image,
+        - extracting/previewing spectrum slices,
+        - adding/editing calibration pairs,
+        - fitting calibration curves and saving results.
+    """
     ap = argparse.ArgumentParser(description="Spectrometer calibration wizard (GUI)")
     ap.add_argument("--image", default=None, help="Preview image path")
     ap.add_argument("--config", default=None, help="Output config path")
@@ -132,19 +167,47 @@ def main():
     cal_markers, = ax_spec.plot([], [], "r|", markersize=12)
 
     def _sync_sliders_to_line():
+        """Synchronize line endpoint slider values to the current `line_start`/`line_end`.
+
+        Inputs:
+            None (uses `line_start` and `line_end` from the enclosing scope).
+        Output:
+            None (side-effect updates matplotlib slider widget values).
+        Transformation:
+            Writes the current endpoint pixel coordinates back into the slider widgets.
+        """
         slider_start_x.set_val(line_start[0])
         slider_start_y.set_val(line_start[1])
         slider_end_x.set_val(line_end[0])
         slider_end_y.set_val(line_end[1])
 
     def update_line_display():
+        """Update the on-image visualization of the selected line ROI.
+
+        Inputs:
+            None (uses `line_start` and `line_end` from enclosing scope).
+        Output:
+            None (side-effect updates matplotlib artists and triggers redraw).
+        Transformation:
+            Updates the red line segment and the start/end markers on `ax_img`.
+        """
         line_artist.set_data([line_start[0], line_end[0]], [line_start[1], line_end[1]])
         start_marker.set_data([line_start[0]], [line_start[1]])
         end_marker.set_data([line_end[0]], [line_end[1]])
         fig.canvas.draw_idle()
 
     def _wavelength_to_pixel(wl: float, coeffs: np.ndarray, n_pixels: int) -> float:
-        """Convert wavelength to pixel index using calibration coefficients."""
+        """Convert a wavelength value back into a pixel index using calibration coefficients.
+
+        Inputs:
+            wl: Wavelength in nm.
+            coeffs: Calibration coefficients for the selected `fit_type`.
+            n_pixels: Total number of pixels in the spectrum.
+        Output:
+            Pixel index as float (best-effort even when polynomial inversion has no valid root).
+        Transformation:
+            Solves the inverse mapping (linear algebra for linear fits, root selection/nearest-value for polynomial fits).
+        """
         if fit_type == "linear" and len(coeffs) == 2:
             if abs(coeffs[0]) < 1e-12:
                 return 0.0
@@ -162,6 +225,16 @@ def main():
         return float(idx)
 
     def update_spectrum():
+        """Update the spectrum plot and optional calibration overlay from the current line ROI.
+
+        Inputs:
+            None (uses `frame`, `line_start`, `line_end`, `thickness`, `pairs`, `fit_type`, and `show_wavelength_x`).
+        Output:
+            None (side-effect updates spectrum line and calibration markers on `ax_spec`).
+        Transformation:
+            Extracts line profile intensities from the image, maps x-axis to either Pixel or wavelength,
+            and updates marker positions to match the current calibration pairs.
+        """
         start = (int(line_start[0]), int(line_start[1]))
         end = (int(line_end[0]), int(line_end[1]))
         intensities = extract_line_profile(frame, start, end, thickness)
@@ -196,6 +269,15 @@ def main():
         fig.canvas.draw_idle()
 
     def _compute_r2(coeffs):
+        """Compute R² for how well the given coefficients fit the current calibration pairs.
+
+        Inputs:
+            coeffs: Calibration coefficients.
+        Output:
+            R² as float, or None if not computable (e.g. fewer than 2 pairs or zero variance).
+        Transformation:
+            Computes predicted wavelengths for the given pixel positions and uses `1 - SS_res/SS_tot`.
+        """
         if len(pairs) < 2:
             return None
         pixels = np.array([p[0] for p in pairs])
@@ -206,6 +288,15 @@ def main():
         return 1 - ss_res / ss_tot if ss_tot > 0 else None
 
     def update_list_display():
+        """Render calibration pairs text into the calibration list panel.
+
+        Inputs:
+            None (uses `pairs`, `ax_list`).
+        Output:
+            None (side-effect clears and redraws `ax_list`).
+        Transformation:
+            Clears existing text, shows `(none)` when empty, otherwise renders ordered entries `px -> nm`.
+        """
         ax_list.clear()
         ax_list.set_axis_off()
         ax_list.set_title("Calibration points")
@@ -220,6 +311,16 @@ def main():
     fit_text_artist = [None]
 
     def update_fit_display():
+        """Render the current fit equation and R² value for the calibration pairs.
+
+        Inputs:
+            None (uses `pairs`, `fit_type`, `poly_degree`, `ax_list` and `fit_text_artist`).
+        Output:
+            None (side-effect creates/removes a matplotlib text artist).
+        Transformation:
+            Computes calibration coefficients via `fit_calibration`, formats the equation string,
+            computes R² using `_compute_r2`, and updates the panel.
+        """
         if fit_text_artist[0] is not None:
             fit_text_artist[0].remove()
             fit_text_artist[0] = None
@@ -246,6 +347,15 @@ def main():
         fig.canvas.draw_idle()
 
     def on_slider_change(_):
+        """Handle ROI slider changes and refresh the derived UI state.
+
+        Inputs:
+            _: slider event payload (unused).
+        Output:
+            None (side-effect updates `line_start`/`line_end` and redraws).
+        Transformation:
+            Reads slider values, updates line endpoint pixel coordinates, then calls `refresh()`.
+        """
         line_start[0] = int(slider_start_x.val)
         line_start[1] = int(slider_start_y.val)
         line_end[0] = int(slider_end_x.val)
@@ -253,12 +363,32 @@ def main():
         refresh()
 
     def refresh():
+        """Refresh all UI components derived from the current line ROI and calibration state.
+
+        Inputs:
+            None.
+        Output:
+            None (side-effect triggers redraws on multiple axes).
+        Transformation:
+            Calls `update_line_display`, `update_spectrum`, `update_list_display`, and `update_fit_display`.
+        """
         update_line_display()
         update_spectrum()
         update_list_display()
         update_fit_display()
 
     def on_image_click(event):
+        """Handle clicks on the preview image to set the line endpoints.
+
+        Inputs:
+            event: Matplotlib mouse event containing `inaxes`, `xdata`, `ydata`.
+        Output:
+            None (side-effect updates `line_start`/`line_end`, sliders, and redraws).
+        Transformation:
+            - Converts click coordinates to integer pixel positions (clamped to image bounds).
+            - Alternates between selecting start and end endpoints.
+            - Synchronizes sliders and refreshes the UI.
+        """
         if event.inaxes != ax_img or event.xdata is None:
             return
         nonlocal line_click_count
@@ -278,6 +408,16 @@ def main():
         refresh()
 
     def set_line_click(_):
+        """Switch UI mode to “define line” and reset any in-progress calibration edits.
+
+        Inputs:
+            _: unused callback payload.
+        Output:
+            None (side-effect resets click-mode state and updates panel titles/boxes).
+        Transformation:
+            Resets `line_click_count`, disables calibration-add mode, clears pending pixel/index state,
+            resets UI text input boxes, and refreshes the display.
+        """
         nonlocal line_click_count, add_calibration_mode, pending_pixel, editing_index
         line_click_count = 0
         add_calibration_mode = False
@@ -291,6 +431,16 @@ def main():
         refresh()
 
     def add_calibration_click(_):
+        """Enable calibration-point mode for the spectrum panel.
+
+        Inputs:
+            _: unused callback payload.
+        Output:
+            None (side-effect updates state variables and prompts user via UI text).
+        Transformation:
+            Sets `add_calibration_mode=True`, clears editing state, resets input boxes,
+            and updates axis titles to instruct the next user action.
+        """
         nonlocal add_calibration_mode, editing_index
         add_calibration_mode = True
         editing_index = None
@@ -300,7 +450,17 @@ def main():
         fig.canvas.draw_idle()
 
     def _snap_to_local_max(clicked_pixel: float, half_window: int = 25) -> float:
-        """Snap clicked pixel to local maximum within ±half_window points."""
+        """Snap a clicked pixel coordinate to the nearest local maximum.
+
+        Inputs:
+            clicked_pixel: Pixel position chosen by the user (float).
+            half_window: Search radius in points around the rounded pixel index.
+        Output:
+            Pixel index (float) corresponding to the local maximum within the window.
+        Transformation:
+            Reads the current intensity curve (`spec_line` y-data), searches `argmax` in a bounded window,
+            and returns the index of that maximum.
+        """
         intensities = spec_line.get_ydata()
         if len(intensities) == 0:
             return clicked_pixel
@@ -312,6 +472,18 @@ def main():
         return float(lo + local_max_offset)
 
     def on_spectrum_click_handler(event):
+        """Handle clicks on the spectrum plot to select/edit a calibration pixel.
+
+        Inputs:
+            event: Matplotlib mouse event with `.inaxes` and `.xdata`.
+        Output:
+            None (side-effect updates pending pixel selection and UI fields).
+        Transformation:
+            - Ignores clicks when not in spectrum axis or when calibration-add mode is disabled.
+            - Converts x coordinate to pixel space (optionally inverts wavelength->pixel using calibration coefficients).
+            - Snaps the pixel to a nearby local maximum to improve calibration stability.
+            - Writes the snapped pixel into `pixel_box` and updates status/instruction text.
+        """
         nonlocal pending_pixel
         if event.inaxes != ax_spec or event.xdata is None:
             return
@@ -334,6 +506,17 @@ def main():
         fig.canvas.draw_idle()
 
     def on_wavelength_submit(text):
+        """Accept wavelength entry (user presses Enter) and update calibration pairs.
+
+        Inputs:
+            text: User-entered wavelength string.
+        Output:
+            None (side-effect updates `pairs`, clears boxes, refreshes UI, and updates status).
+        Transformation:
+            Parses wavelength, reads pixel from `pixel_box`, validates range,
+            then either edits an existing pair (`editing_index`) or appends a new pair (`pending_pixel`).
+            Finally sorts pairs and calls `refresh()`.
+        """
         nonlocal pending_pixel, editing_index, _skip_wl_submit
         if _skip_wl_submit:
             return
@@ -362,18 +545,29 @@ def main():
             pass
 
     def fit_linear_click(_):
+        """Switch the calibration fit model to linear (λ = a*px + b)."""
         nonlocal fit_type
         fit_type = "linear"
         fit_label.set_text(f"Fit: {fit_type}")
         update_fit_display()
 
     def fit_poly_click(_):
+        """Switch the calibration fit model to polynomial (λ = poly(px))."""
         nonlocal fit_type
         fit_type = "polynomial"
         fit_label.set_text(f"Fit: {fit_type}")
         update_fit_display()
 
     def _get_selected_index():
+        """Resolve the currently selected point index from the UI text box.
+
+        Inputs:
+            None (reads `pt_box.text`).
+        Output:
+            Selected pair index as integer (0-based), or None if invalid/out of range.
+        Transformation:
+            Parses `pt_box.text` as 1-based UI index and converts to 0-based internal index.
+        """
         try:
             i = int(pt_box.text.strip())
             if 1 <= i <= len(pairs):
@@ -383,6 +577,7 @@ def main():
         return None
 
     def delete_click(_):
+        """Delete the calibration pair selected in the UI (by point number)."""
         idx = _get_selected_index()
         if idx is not None:
             pairs.pop(idx)
@@ -392,6 +587,17 @@ def main():
             status_label.set_text("Select valid point #")
 
     def edit_click(_):
+        """Enter edit mode for the selected calibration pair.
+
+        Inputs:
+            _: unused callback payload.
+        Output:
+            None (side-effect populates input boxes and sets edit state flags).
+        Transformation:
+            - Determines selected index from `pt_box`.
+            - Loads pixel/wavelength values into `pixel_box`/`wl_box`.
+            - Sets `editing_index` and disables add-calibration mode so the next Enter updates the same pair.
+        """
         nonlocal editing_index, pending_pixel, add_calibration_mode, _skip_wl_submit
         idx = _get_selected_index()
         if idx is not None:
@@ -411,6 +617,7 @@ def main():
         fig.canvas.draw_idle()
 
     def update_click(_):
+        """Apply updated pixel/wavelength values to the currently edited calibration pair."""
         nonlocal editing_index
         if editing_index is None:
             return
@@ -433,6 +640,18 @@ def main():
             pass
 
     def save_click(_):
+        """Save the current line + calibration settings into spectrometer config on disk.
+
+        Inputs:
+            _: unused callback payload.
+        Output:
+            None (side-effect writes config file and updates status label).
+        Transformation:
+            - Updates `channel["line"]` from current line ROI.
+            - Updates calibration pair list and fit type.
+            - Recomputes `coefficients` when at least two pairs exist.
+            - Saves via `save_spectrometer_config(cfg, config_path)`.
+        """
         channel["line"] = {
             "start": [int(line_start[0]), int(line_start[1])],
             "end": [int(line_end[0]), int(line_end[1])],
@@ -487,6 +706,15 @@ def main():
     fit_label = ax_btns.text(0.85, 0.5, f"Fit: {fit_type}", transform=ax_btns.transAxes, fontsize=10)
 
     def on_thickness_submit(text):
+        """Handle line thickness input submission from the text box.
+
+        Inputs:
+            text: User-entered thickness value (string).
+        Output:
+            None (side-effect updates `thickness` and refreshes the spectrum UI).
+        Transformation:
+            Parses `text` as integer, clamps to allowed range (1..31), assigns to `thickness`, then calls `refresh()`.
+        """
         nonlocal thickness
         try:
             t = int(text.strip())
@@ -497,6 +725,15 @@ def main():
             pass
 
     def on_wl_x_toggle(label):
+        """Toggle whether the spectrum x-axis is wavelength or pixel index.
+
+        Inputs:
+            label: Clicked status label from matplotlib CheckButtons.
+        Output:
+            None (side-effect updates `show_wavelength_x` and refreshes UI).
+        Transformation:
+            Reads checkbox state (`check_wl_x.get_status()`), updates `show_wavelength_x`, and calls `refresh()`.
+        """
         nonlocal show_wavelength_x
         show_wavelength_x = check_wl_x.get_status()[0]
         refresh()
@@ -511,6 +748,15 @@ def main():
     wl_box.on_submit(on_wavelength_submit)
 
     def on_click(event):
+        """Global click handler that dispatches clicks to the correct axis-specific callbacks.
+
+        Inputs:
+            event: Matplotlib mouse event.
+        Output:
+            None (calls `on_image_click` or `on_spectrum_click_handler` depending on the clicked axes).
+        Transformation:
+            Routes based on `event.inaxes` and the axis objects (`ax_img`, `ax_spec`).
+        """
         if event.inaxes == ax_img:
             on_image_click(event)
         elif event.inaxes == ax_spec:
@@ -555,6 +801,16 @@ def main():
     }
 
     def on_hover(event):
+        """Global hover handler to show tooltips when the mouse is over known UI elements.
+
+        Inputs:
+            event: Matplotlib motion event.
+        Output:
+            None (side-effect updates tooltip annotation visibility/text).
+        Transformation:
+            If `event.inaxes` is in `tooltip_axes`, updates tooltip text and makes it visible;
+            otherwise hides the tooltip.
+        """
         if event.inaxes in tooltip_axes:
             tooltip_annot.set_text(tooltip_axes[event.inaxes])
             tooltip_annot.xy = (event.x, event.y)

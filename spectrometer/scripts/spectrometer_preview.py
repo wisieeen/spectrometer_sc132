@@ -18,6 +18,16 @@ PREVIEW_OUTPUT = os.environ.get("SPECTROMETER_PREVIEW_OUTPUT", "/tmp/spectromete
 
 
 def main():
+    """Capture a single preview frame and save it for line-placement UI.
+
+    Inputs:
+        None (uses `capture_frame()` and `SPECTROMETER_PREVIEW_OUTPUT` env var).
+    Output:
+        Writes a PNG image to the preview output path and prints instructions.
+    Transformation:
+        Captures one frame with RTSP stopped, converts uint16->uint8 for correct PNG display
+        when using Y10 raw capture, then writes the image to disk.
+    """
     # Capture single frame (stream must be off)
     frame = capture_frame()
     # Y10 raw returns uint16 (0-1023); PNG expects 8-bit (0-255) for correct display

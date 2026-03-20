@@ -31,6 +31,17 @@ from scripts.camera_capture import capture_frame, capture_frames_averaged
 
 
 def _get_output_adapter(env=None):
+    """Create and configure the MQTT output adapter.
+
+    Inputs:
+        env: Optional environment configuration dict. If not provided, `load_env()` is used.
+    Output:
+        MQTTAdapter instance configured with broker credentials and spectrometer state topic.
+    Transformation:
+        Reads `env["mqtt"]` for connection parameters and derives the state-topic prefix from
+        `env["spectrometer"]["state_topic"]` (defaulting to `lab/spectrometer/state/`),
+        then instantiates `MQTTAdapter`.
+    """
     env = env or load_env()
     mq = env.get("mqtt", {})
     return MQTTAdapter(
@@ -43,9 +54,18 @@ def _get_output_adapter(env=None):
 
 
 def _acquire_frame(spec_cfg, dark, flat):
-    """
-    Capture and optionally process frame(s).
-    Applies frame averaging first, then dark/flat correction if enabled.
+    """Capture spectrometer frame(s) and optionally apply dark/flat correction.
+
+    Inputs:
+        spec_cfg: Spectrometer configuration dict (used to read `processing` settings).
+        dark: Dark correction frame array (or None).
+        flat: Flat correction frame array (or None).
+    Output:
+        A floating-point 2D frame array (NumPy).
+    Transformation:
+        Captures either a single frame or `processing.frame_average_n` frames, averages them
+        when needed, casts to float, then applies `apply_dark_flat_frame` only if enabled and
+        both correction data are available.
     """
     proc = get_processing_cfg(spec_cfg)
     n = max(1, proc["frame_average_n"])
@@ -63,6 +83,24 @@ def _acquire_frame(spec_cfg, dark, flat):
 
 
 def _process_frame(frame, spec_cfg, output, processing_meta=None, dark=None):
+    """Extract spectra from a frame and publish them via the output adapter.
+
+    Inputs:
+        frame: Captured frame array (2D) to analyze.
+        spec_cfg: Spectrometer configuration dict including `channels` and `calibrations`.
+        output: Output adapter (expects `send_spectrum(spectrum_dict)`).
+        processing_meta: Optional dict describing which processing steps were applied.
+        dark: Dark frame array (or None). Used only as a signal/flag (no correction here).
+    Output:
+        None (publishes spectra as a side-effect).
+    Transformation:
+        For each configured channel:
+        - extracts a line profile from the channel ROI,
+        - optionally deconvolves with Richardson–Lucy,
+        - converts pixel positions to wavelengths using either calibration coefficients
+          or fitted calibration pairs,
+        - builds a spectrum dict with timestamp + metadata and publishes it.
+    """
     cam_cfg = load_camera_config()
     meta = {
         "shutter_us": cam_cfg.get("shutter"),
@@ -132,6 +170,19 @@ def _process_frame(frame, spec_cfg, output, processing_meta=None, dark=None):
 
 
 def main():
+    """Run the spectrometer service with MQTT control.
+
+    Inputs:
+        None (configuration is loaded from environment/disk via helper functions).
+    Output:
+        None (runs until interrupted; publishes spectra and processing state continuously).
+    Transformation:
+        - Initializes MQTT client and subscribes to command topic.
+        - When `running` is enabled, repeatedly captures frames, converts them into spectra,
+          and publishes spectra.
+        - Handles MQTT commands to start/stop, adjust interval, adjust processing settings,
+          and perform single-shot captures.
+    """
     env = load_env()
     spec_cfg = load_spectrometer_config()
     output = _get_output_adapter(env)
@@ -145,6 +196,16 @@ def main():
     interval_ms = 1000
 
     def _publish_processing_state(client):
+        """Publish processing parameters as retained MQTT messages.
+
+        Inputs:
+            client: MQTT client instance (expects `publish(topic, payload, retain=...)`).
+        Output:
+            None.
+        Transformation:
+            Reads the current `processing` config from disk and publishes each processing field
+            under the spectrometer state-topic prefix (`st`).
+        """
         proc = get_processing_cfg(load_spectrometer_config())
         client.publish(st + "/processing_frame_average_n", str(proc["frame_average_n"]), retain=True)
         client.publish(
@@ -162,6 +223,21 @@ def main():
         client.publish(st + "/processing_richardson_lucy_iterations", str(proc["richardson_lucy_iterations"]), retain=True)
 
     def on_message(client, userdata, msg):
+        """Handle incoming MQTT commands to control acquisition/processing.
+
+        Inputs:
+            client: MQTT client instance.
+            userdata: Unused callback userdata.
+            msg: MQTT message containing `msg.topic` and `msg.payload`.
+        Output:
+            None (updates runtime state and/or publishes responses to state topic).
+        Transformation:
+            - Derives the command by stripping `cmd_topic` from the MQTT topic.
+            - Updates `running` / `interval_ms` based on `start/stop/continuous/interval_ms`.
+            - Updates processing settings in the spectrometer config file.
+            - For `single`, captures and processes one spectrum snapshot immediately.
+            - For `preview`, spawns `spectrometer_preview.py` in a new process.
+        """
         nonlocal running, interval_ms, spec_cfg
         payload = msg.payload.decode().strip()
         topic = msg.topic.replace(cmd_topic, "")

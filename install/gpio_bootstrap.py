@@ -83,6 +83,15 @@ def load_wifi_config():
 
 
 def _systemctl(*args):
+    """Run `systemctl` with best-effort semantics.
+
+    Inputs:
+        *args: Arguments passed to `systemctl` (e.g. "start", "service-name").
+    Output:
+        None (does not raise on failures; captures output is enabled).
+    Transformation:
+        Invokes `systemctl` via subprocess with a short timeout and ignores errors.
+    """
     subprocess.run(["systemctl"] + list(args), check=False, timeout=10, capture_output=True)
 
 
@@ -327,6 +336,21 @@ def _run_network_recovery():
 
 
 def main():
+    """Bootstrapping entrypoint: decide AP/STA and conditional services.
+
+    Inputs:
+        None (reads GPIO state and environment config from disk/system files).
+    Output:
+        Process exit code 0; writes `/run/spectrometer-boot-mode.json` and boot flag files.
+    Transformation:
+        - Performs optional network recovery when recovery trigger files exist in the boot partition.
+        - Reads GPIO mode pins to decide which flags to create:
+            * `/run/spectrometer-mqtt-enabled`
+            * `/run/spectrometer-webserver-enabled`
+            * `/run/spectrometer-ap-enabled` (for AP mode)
+        - Configures NetworkManager for AP or STA mode unless `spectrometer-skip-network` is present.
+        - Writes diagnostic info to the boot log.
+    """
     if _run_network_recovery():
         _log("=== recovery triggered, rebooting ===")
         return 0

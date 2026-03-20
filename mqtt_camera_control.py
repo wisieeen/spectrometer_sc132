@@ -1,3 +1,9 @@
+"""MQTT-driven camera controller for spectrometer streams.
+
+Subscribes to the configured MQTT command topic and starts/stops RTSP streaming (mediamtx + rtsp-camera),
+applies camera exposure/gain via I2C, and updates camera configuration values by writing JSON to disk.
+"""
+
 import paho.mqtt.client as mqtt
 import json
 import os
@@ -7,6 +13,15 @@ ENV_CONFIG_FILE = os.environ.get("ENV_CONFIG", "/home/raspberry/env_config.json"
 
 
 def _load_env():
+    """Load the environment config JSON specified by `ENV_CONFIG_FILE`.
+
+    Inputs:
+        None (uses `ENV_CONFIG_FILE` constant).
+    Output:
+        Parsed environment dict (must include `mqtt`, `paths`, `device`, and `services` keys).
+    Transformation:
+        Deserializes JSON from disk into a Python dict.
+    """
     with open(ENV_CONFIG_FILE) as f:
         return json.load(f)
 
@@ -32,21 +47,59 @@ DEBUG = _ENV.get("debug", False)
 
 
 def load_config():
+    """Load the camera configuration JSON from disk.
+
+    Inputs:
+        None (uses `CONFIG_FILE` constant).
+    Output:
+        Parsed JSON dict representing the camera configuration.
+    Transformation:
+        Reads `CONFIG_FILE` and deserializes via `json.load`.
+    """
     with open(CONFIG_FILE) as f:
         return json.load(f)
 
 
 def save_config(cfg):
+    """Save the camera configuration JSON to disk.
+
+    Inputs:
+        cfg: Camera configuration dict to persist.
+    Output:
+        None (writes file contents).
+    Transformation:
+        Serializes `cfg` as JSON with indentation and writes to `CONFIG_FILE`.
+    """
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2)
 
 
 def publish_all_states(client, cfg):
+    """Publish all configuration values to MQTT as retained state messages.
+
+    Inputs:
+        client: MQTT client instance with `.publish(...)`.
+        cfg: Camera configuration dict.
+    Output:
+        None (side-effect publishes to `STATE_TOPIC + key`).
+    Transformation:
+        Iterates over keys in `cfg` and publishes each as a retained MQTT message.
+    """
     for key, val in cfg.items():
         client.publish(STATE_TOPIC + key, str(val), retain=True)
 
 
 def _systemctl(action, unit):
+    """Run `sudo systemctl <action> <unit>` best-effort.
+
+    Inputs:
+        action: systemctl action (start/stop/restart).
+        unit: systemd unit name.
+    Output:
+        None (errors are ignored because `check=False`).
+    Transformation:
+        Invokes systemctl via subprocess.
+    """
     subprocess.run(["sudo", "systemctl", action, unit], check=False, timeout=15)
 
 
@@ -83,6 +136,20 @@ def safe_reboot():
 
 
 def apply_exposure_and_gain(cfg):
+    """Apply shutter/exposure and gain to the camera using the configured I2C tool.
+
+    Inputs:
+        cfg: Camera config dict; expected keys:
+            - `fps` (int)
+            - `shutter` (int microseconds)
+            - `gain` (float or number)
+    Output:
+        None (side-effect: calls external I2C tool when available).
+    Transformation:
+        - Computes maximum exposure from fps and clamps shutter if necessary.
+        - Uses the I2C tool to set `expmode`, `gainmode`, and optionally `metime`/`mgain`.
+        - Silently returns when I2C tool is missing or not executable.
+    """
     if not os.path.isfile(I2C_TOOL) or not os.access(I2C_TOOL, os.X_OK):
         if DEBUG:
             print(f"[mqtt_camera] I2C tool not executable at {I2C_TOOL}, skipping exposure/gain")
@@ -138,6 +205,22 @@ def apply_exposure_and_gain(cfg):
 
 
 def on_message(client, userdata, msg):
+    """MQTT callback: decode commands and update streaming/camera configuration.
+
+    Inputs:
+        client: MQTT client instance.
+        userdata: Unused callback userdata.
+        msg: MQTT message containing `.topic` and `.payload`.
+    Output:
+        None (side-effect: starts/stops services, writes config, applies I2C, publishes retained state).
+    Transformation:
+        - Resolves the command name from `msg.topic` (and `RTSP_ALIAS_TOPIC`).
+        - Dispatches commands:
+            * rtsp ON/OFF -> start/stop stream
+            * shutdown/reboot -> power control and returns early
+            * resolution/fps/shutter/gain/pixel_format -> updates config and applies/restarts
+        - Publishes the updated full config via retained state messages.
+    """
     full_topic = msg.topic
     payload = msg.payload.decode()
     if DEBUG:

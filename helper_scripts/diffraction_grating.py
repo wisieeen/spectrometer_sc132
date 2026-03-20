@@ -1,15 +1,47 @@
+"""
+Interactive diffraction grating visualizer.
+
+Displays a simple 2D model of an illuminated grating and plots diffraction rays for two wavelengths.
+Uses matplotlib sliders to change groove density (lines/mm), wavelength pair, and incident angle.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
 # ======= FUNKCJE =======
 def diffraction_angle(lam, d, theta_i, m):
+    """Compute diffraction angle for a given wavelength/order using the grating equation.
+
+    Inputs:
+        lam: Wavelength in meters.
+        d: Groove spacing in meters.
+        theta_i: Incident angle in radians.
+        m: Diffraction order (integer, e.g. 1 or 2).
+    Output:
+        Diffraction angle in radians, or None if the solution is not physically valid (|sin| > 1).
+    Transformation:
+        Evaluates `sin(theta_d) = (m * lam / d) - sin(theta_i)` and returns `arcsin` result when valid.
+    """
     sin_theta = (m * lam / d) - np.sin(theta_i)
     if abs(sin_theta) > 1:
         return None
     return np.arcsin(sin_theta)
 
 def ray(ax, theta, color, lw=2, label=None, alpha=1.0):
+    """Draw a ray line from the origin with a given direction on the provided matplotlib axis.
+
+    Inputs:
+        ax: Matplotlib axis.
+        theta: Direction angle in radians (measured from the normal in this simplified model).
+        color: Line color.
+        lw: Line width.
+        label: Optional legend label.
+        alpha: Alpha transparency.
+    Output:
+        None (side-effect: calls `ax.plot`).
+    Transformation:
+        Computes `(x, y)` endpoint using `sin(theta)`/`cos(theta)` and plots the segment from origin.
+    """
     x = np.sin(theta)
     y = np.cos(theta)
     ax.plot([0, x], [0, y], color=color, lw=lw, alpha=alpha, label=label)
@@ -43,6 +75,16 @@ s_th  = Slider(ax_th, 'θ₀ [°]', 0, 80, valinit=theta_i_0)
 
 # ======= RYSOWANIE =======
 def update(val):
+    """Redraw the visualization using the current slider values.
+
+    Inputs:
+        val: Slider change value (unused; kept for matplotlib callback compatibility).
+    Output:
+        None (side-effect: clears and repopulates axis, then triggers redraw).
+    Transformation:
+        Reads sliders (lines density, wavelengths, incident angle), computes groove spacing `d`,
+        then computes and draws diffraction rays for orders m=1 and m=2 for both wavelengths.
+    """
     ax.cla()
 
     # Podłoże

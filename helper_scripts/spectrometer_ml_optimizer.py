@@ -194,6 +194,19 @@ def run_genetic_optimization(maxiter: int = 100, popsize: int = 15,
 # ========== MAIN ==========
 
 def main():
+    """CLI entrypoint: run geometry optimization and print best parameters.
+
+    Inputs:
+        Command-line args:
+        - `--method` selects `bayesian`, `genetic`, or `both`
+        - `--n-calls` controls the number of evaluations for Bayesian optimization
+        - `--maxiter` controls iterations for the genetic optimizer
+    Output:
+        Prints optimization results to stdout (best merit + best parameter set).
+    Transformation:
+        Chooses which optimization routine(s) to run, collects results, and reports the
+        best overall solution when multiple methods are executed.
+    """
     import argparse
     parser = argparse.ArgumentParser(description="Spectrometer geometry ML optimizer")
     parser.add_argument("--method", choices=["bayesian", "genetic", "both"],

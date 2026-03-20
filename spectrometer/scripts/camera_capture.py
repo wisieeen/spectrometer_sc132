@@ -17,7 +17,15 @@ from lib.env_config import load_env, load_camera_config
 
 
 def _parse_resolution(res: str) -> tuple[int, int]:
-    """Parse 'WxH' resolution. Raises ValueError if invalid."""
+    """Parse a camera resolution string formatted as `WIDTHxHEIGHT`.
+
+    Inputs:
+        res: Resolution string like `"1080x640"`.
+    Output:
+        Tuple `(width, height)` as positive integers.
+    Transformation:
+        Validates formatting, splits by `"x"`, converts to `int`, and rejects invalid/negative values.
+    """
     if not res or "x" not in res:
         raise ValueError(f"resolution must be WxH (e.g. 1080x640), got {res!r}")
     parts = res.strip().split("x")
@@ -34,8 +42,20 @@ def _parse_resolution(res: str) -> tuple[int, int]:
 
 def _get_capture_context():
     """
-    Load env and camera config, ensure stream stopped, configure device.
-    Returns (env, cfg, device, w, h, bpl, stride_w, pixel_format).
+    Build the capture context needed by all capture functions.
+
+    Inputs:
+        None (reads env + camera config from disk using `load_env()` / `load_camera_config()`).
+    Output:
+        `(env, cfg, device, w, h, bpl, stride_w, pixel_format)` where:
+            - `device`: video device path (e.g. `/dev/video0`)
+            - `w`, `h`: parsed resolution width/height
+            - `bpl`: bytes-per-line reported by `v4l2-ctl`
+            - `stride_w`: effective stride width in pixels (may exceed `w`)
+            - `pixel_format`: normalized pixel format string (`Y8`, `Y10`, or `Y10P`)
+    Transformation:
+        Ensures RTSP services are stopped, configures the V4L2 device using the configured ROI/FPS/i2c,
+        then computes stride/pixel-format details used by raw capture paths.
     """
     env = load_env()
     cfg = load_camera_config(env)
@@ -55,7 +75,16 @@ def _get_capture_context():
 
 
 def _ensure_stream_stopped(env):
-    """Check that rtsp-camera and mediamtx are stopped. Exit with message if not."""
+    """Ensure RTSP pipeline services are stopped before touching V4L2.
+
+    Inputs:
+        env: Environment dict containing `services.rtsp_camera` and `services.mediamtx` entries.
+    Output:
+        None (terminates the process with a message when the services are active).
+    Transformation:
+        Calls `systemctl is-active` for each service; if either is `active`, prints an error to stderr
+        and exits with status 1 to avoid V4L2 conflicts.
+    """
     for svc in env.get("services", {}).get("rtsp_camera", "rtsp-camera.service"), env.get(
         "services", {}
     ).get("mediamtx", "mediamtx.service"):
@@ -74,8 +103,17 @@ def _ensure_stream_stopped(env):
 
 def _get_stride_info(env, cfg) -> tuple[int, int]:
     """
-    Query bytes-per-line and stride width (pixels) from v4l2-ctl.
-    Returns (bytes_per_line, stride_width_px). Stride width may exceed config width when driver adds padding.
+    Query bytes-per-line and stride width (pixels) from the V4L2 device.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera configuration dict (contains `pixel_format`).
+    Output:
+        `(bytes_per_line, stride_width_px)`. `stride_width_px` may exceed the configured width
+        when the driver adds row padding.
+    Transformation:
+        Runs `v4l2-ctl --get-fmt-video`, parses the `Bytes per Line` field, then derives stride width
+        depending on pixel format (`Y8` uses 1 byte/pixel; `Y10` and `Y10P` use packed formats).
     """
     device = env.get("device", {}).get("video", "/dev/video0")
     pixel_format = cfg.get("pixel_format", "Y8")
@@ -105,7 +143,19 @@ def _get_stride_info(env, cfg) -> tuple[int, int]:
 
 
 def _configure_device(env, cfg):
-    """Apply v4l2-ctl and I2C settings. Do NOT clamp shutter to FPS."""
+    """Configure the V4L2 device and optionally apply I2C exposure/gain.
+
+    Inputs:
+        env: Environment dict (contains `device.video`, `device.i2c_bus`, and `paths.i2c_tool`).
+        cfg: Camera config dict (contains `resolution`, `fps`, `shutter`, `gain`, `pixel_format`).
+    Output:
+        None (side-effect: configures V4L2 and the device via `v4l2-ctl` / I2C tool).
+    Transformation:
+        - Sets ROI to (0,0), applies width/height/pixelformat and frame rate.
+        - Converts resolution using `_parse_resolution`.
+        - Applies I2C `expmode`/`gainmode` and optionally `metime`/`mgain` if the I2C tool exists.
+        - Intentionally does NOT clamp shutter to FPS because this path is used for single-frame capture.
+    """
     device = env.get("device", {}).get("video", "/dev/video0")
     i2c_tool = env.get("paths", {}).get("i2c_tool")
     i2c_bus = str(env.get("device", {}).get("i2c_bus", "10"))
@@ -170,16 +220,35 @@ def _configure_device(env, cfg):
 
 def _capture_raw_y8(env, cfg, w, h, bpl, stride_w, num_frames: int) -> np.ndarray:
     """
-    Raw Y8 capture via v4l2-ctl. Y8: 1 byte per pixel.
-    OpenCV V4L2 does not handle stride; raw buffer has stride_w x h pixels, crop to w x h.
-    Returns last frame only.
+    Capture raw Y8 frames using `v4l2-ctl` and return only the last frame.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera config dict (currently unused in this function but kept for API symmetry).
+        w, h: Requested output width/height.
+        bpl: Bytes per line (from `_get_stride_info`).
+        stride_w: Stride width in pixels (may exceed `w` due to padding).
+        num_frames: Number of frames to capture via `--stream-count`.
+    Output:
+        Last captured frame as a 2D NumPy array (dtype depends on downstream; raw capture uses uint8).
+    Transformation:
+        Delegates to `_capture_raw_y8_all(...)`, then returns the final entry (or `None` if no frames).
     """
     frames = _capture_raw_y8_all(env, cfg, w, h, bpl, stride_w, num_frames)
     return frames[-1] if frames else None
 
 
 def _read_exact(stream, n: int) -> Optional[bytes]:
-    """Read exactly n bytes from stream. Returns None if EOF before n bytes."""
+    """Read exactly `n` bytes from a file-like stream.
+
+    Inputs:
+        stream: A readable binary stream (e.g. `proc.stdout`).
+        n: Number of bytes to read.
+    Output:
+        Byte string of length `n`, or None if the stream ends early (EOF).
+    Transformation:
+        Accumulates chunks until the requested byte count is reached.
+    """
     buf = bytearray()
     while len(buf) < n:
         chunk = stream.read(n - len(buf))
@@ -191,8 +260,20 @@ def _read_exact(stream, n: int) -> Optional[bytes]:
 
 def _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> np.ndarray | None:
     """
-    Raw Y8 capture with incremental averaging. Streams frames one-by-one to stay within memory budget.
-    Returns float64 averaged frame, or None on failure.
+    Capture raw Y8 frames and return their average as float64.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera config dict (currently unused in this function but kept for API symmetry).
+        w, h: Requested output width/height.
+        bpl: Bytes per line.
+        stride_w: Stride width in pixels (may exceed `w` due to padding).
+        num_frames: Number of frames to capture.
+    Output:
+        Averaged frame as float64 NumPy array (shape `(h, w)`), or None on failure/timeout.
+    Transformation:
+        Streams frames from `v4l2-ctl --stream-to=-`, crops each frame to `(h, w)`,
+        accumulates in float64, and returns `accum / num_frames`.
     """
     device = env.get("device", {}).get("video", "/dev/video0")
     frame_bytes = bpl * h
@@ -232,8 +313,20 @@ def _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> 
 
 def _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> np.ndarray | None:
     """
-    Raw Y10 capture with incremental averaging. Streams frames one-by-one to stay within memory budget.
-    Returns float64 averaged frame, or None on failure.
+    Capture raw Y10 frames and return their average as float64.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera config dict (currently unused in this function but kept for API symmetry).
+        w, h: Requested output width/height.
+        bpl: Bytes per line.
+        stride_w: Stride width in pixels (may differ from `w` for Y10 packing).
+        num_frames: Number of frames to capture.
+    Output:
+        Averaged frame as float64 NumPy array (shape `(h, w)`), or None on failure/timeout.
+    Transformation:
+        Streams frames from `v4l2-ctl`, interprets raw bytes as uint16, crops to `(h, w)`,
+        accumulates in float64, and returns `accum / num_frames`.
     """
     device = env.get("device", {}).get("video", "/dev/video0")
     frame_bytes = bpl * h
@@ -273,7 +366,21 @@ def _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) ->
 
 
 def _capture_raw_y8_all(env, cfg, w, h, bpl, stride_w, num_frames: int) -> list:
-    """Raw Y8 capture returning all num_frames. Returns [] on failure."""
+    """Capture all Y8 frames using `v4l2-ctl` and return them as a list.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera config dict (currently unused in this function but kept for API symmetry).
+        w, h: Requested output width/height.
+        bpl: Bytes per line.
+        stride_w: Stride width in pixels (may exceed `w` due to padding).
+        num_frames: Number of frames to capture.
+    Output:
+        List of frames (each a 2D NumPy array of shape `(h, w)`), or [] on failure.
+    Transformation:
+        Runs `v4l2-ctl --stream-mmap --stream-to=-`, slices the output buffer into per-frame chunks,
+        reshapes to `(h, bpl)`/stride layout, then crops to `(h, w)` for each frame.
+    """
     device = env.get("device", {}).get("video", "/dev/video0")
     frame_bytes = bpl * h
 
@@ -304,16 +411,40 @@ def _capture_raw_y8_all(env, cfg, w, h, bpl, stride_w, num_frames: int) -> list:
 
 def _capture_raw_y10(env, cfg, w, h, bpl, stride_w, num_frames: int) -> np.ndarray:
     """
-    Raw Y10 capture via v4l2-ctl. V4L2 Y10: 16-bit little-endian, 10 bits per pixel.
-    OpenCV cannot decode Y10; it misinterprets raw bytes as BGR, producing garbage.
-    stride_w = bpl // 2 (pixels per line). Returns last frame only.
+    Capture raw Y10 frames via `v4l2-ctl` and return only the last frame.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera config dict (currently unused in this function but kept for API symmetry).
+        w, h: Requested output width/height.
+        bpl: Bytes per line.
+        stride_w: Stride width in pixels used to reshape the raw buffer.
+        num_frames: Number of frames to capture.
+    Output:
+        Last captured frame as a 2D NumPy array (uint16), or None if capture fails.
+    Transformation:
+        Delegates to `_capture_raw_y10_all(...)` and returns the last frame.
     """
     frames = _capture_raw_y10_all(env, cfg, w, h, bpl, stride_w, num_frames)
     return frames[-1] if frames else None
 
 
 def _capture_raw_y10_all(env, cfg, w, h, bpl, stride_w, num_frames: int) -> list:
-    """Raw Y10 capture returning all num_frames. Returns [] on failure."""
+    """Capture all Y10 frames via `v4l2-ctl` and return them as a list.
+
+    Inputs:
+        env: Environment dict (contains `device.video`).
+        cfg: Camera config dict (currently unused in this function but kept for API symmetry).
+        w, h: Requested output width/height.
+        bpl: Bytes per line.
+        stride_w: Stride width in pixels (used in reshape).
+        num_frames: Number of frames to capture.
+    Output:
+        List of frames (2D NumPy arrays of uint16, shape `(h, w)`), or [] on failure.
+    Transformation:
+        Runs `v4l2-ctl --stream-mmap --stream-to=-`, slices the raw buffer into per-frame chunks,
+        interprets as uint16, reshapes to `(h, stride_w)`, and crops to `(h, w)`.
+    """
     device = env.get("device", {}).get("video", "/dev/video0")
     frame_bytes = bpl * h
 
@@ -344,9 +475,16 @@ def _capture_raw_y10_all(env, cfg, w, h, bpl, stride_w, num_frames: int) -> list
 
 def capture_frame(num_frames: int = 1) -> np.ndarray:
     """
-    Capture frame(s) from /dev/video0. Returns last frame as numpy array (GREY).
-    Ensures stream is stopped, configures device. When stride != width, uses raw
-    v4l2-ctl capture (OpenCV V4L2 does not handle stride correctly).
+    Capture one frame (or multiple and return the last) from `/dev/video0`.
+
+    Inputs:
+        num_frames: Number of frames to request; if > 1, the function captures them sequentially and returns the last frame.
+    Output:
+        2D grayscale frame as a NumPy array (shape `(height, width)`).
+    Transformation:
+        - Loads capture context (env/config), ensures RTSP services are stopped, configures V4L2/I2C.
+        - Chooses raw capture paths for Y8 stride-padding and for Y10 (because OpenCV mis-decodes Y10).
+        - Otherwise uses OpenCV `VideoCapture`, optionally crops for stride mismatches, and converts to grayscale if needed.
     """
     env, cfg, device, w, h, bpl, stride_w, pixel_format = _get_capture_context()
 
@@ -399,8 +537,16 @@ def capture_frame(num_frames: int = 1) -> np.ndarray:
 
 def capture_frames(n: int) -> list:
     """
-    Capture n consecutive frames from /dev/video0 (same config as capture_frame).
-    Returns list of n frames. For n=1, equivalent to [capture_frame(1)].
+    Capture `n` consecutive grayscale frames from `/dev/video0`.
+
+    Inputs:
+        n: Number of frames to capture.
+    Output:
+        List of `n` frames, where each frame is a 2D NumPy array (shape `(height, width)`).
+    Transformation:
+        Uses the same capture context/configuration as `capture_frame()`, chooses raw capture paths
+        when required (Y10 or stride-padding), otherwise uses OpenCV `VideoCapture` and crops/gray-converts
+        each frame to the configured width.
     """
     if n <= 0:
         return []
@@ -451,9 +597,15 @@ def capture_frames(n: int) -> list:
 
 def capture_frames_averaged(n: int) -> np.ndarray:
     """
-    Capture n consecutive frames and return their average as float64.
-    Uses incremental accumulation (streaming) to stay within memory budget
-    when n is large (e.g. 100+). For n=1, equivalent to capture_frame().astype(float64).
+    Capture `n` consecutive frames and return their average as a float64 frame.
+
+    Inputs:
+        n: Number of frames to capture; must be >= 1.
+    Output:
+        Averaged frame as a float64 NumPy array (shape `(height, width)`).
+    Transformation:
+        - For Y10 stride padding or Y8 stride-padding cases, uses streaming raw capture functions to average incrementally.
+        - Otherwise uses OpenCV to capture frames, accumulates in float64, and returns `accum / count`.
     """
     if n <= 0:
         raise ValueError("n must be >= 1")

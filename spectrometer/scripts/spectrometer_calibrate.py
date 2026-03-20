@@ -15,6 +15,24 @@ from lib.spectrum import fit_calibration
 
 
 def main():
+    """CLI entrypoint: manage and compute spectrometer calibration coefficients.
+
+    Inputs:
+        Command-line args:
+        - `--calibration-id`: calibration profile id to modify
+        - `--add-pair PIXEL WAVELENGTH_NM`: append a calibration pair
+        - `--fit {linear,polynomial}`: choose calibration model type
+        - `--degree`: polynomial degree (used when `--fit=polynomial`)
+        - `--list`: list all calibration profiles
+    Output:
+        Updates `spectrometer_config.json` on disk (via `save_spectrometer_config`) and prints results.
+        If `--list` is set, prints calibrations and returns without modifying coefficients.
+    Transformation:
+        - Loads config and ensures the selected calibration block exists.
+        - Optionally appends pixel/wavelength pairs and updates fit settings.
+        - Recomputes `coefficients` when at least two pairs are present.
+        - Saves the updated config back to disk.
+    """
     ap = argparse.ArgumentParser(description="Spectrometer calibration")
     ap.add_argument("--calibration-id", default="default", help="Calibration ID")
     ap.add_argument("--add-pair", nargs=2, type=float, metavar=("PIXEL", "WAVELENGTH_NM"))

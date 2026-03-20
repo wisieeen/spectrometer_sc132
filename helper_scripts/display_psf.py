@@ -23,6 +23,19 @@ def center_psf(psf: np.ndarray) -> np.ndarray:
 
 
 def main():
+    """CLI entrypoint: load a saved PSF `.npy` file and display quality diagnostics.
+
+    Inputs:
+        Command-line args:
+        - `psf_path`: path to `.npy` PSF file
+        - `--no-plot`: print stats only (no matplotlib UI)
+        - `--show-centered`: also plot a centered version of the PSF if misaligned
+    Output:
+        Prints PSF stats (peak/center offset/FWHM) to stdout and optionally shows a matplotlib plot.
+    Transformation:
+        Loads the PSF array, normalizes/validates shape, computes peak offset from the center,
+        prints warnings if the PSF is not centered, and optionally renders the plot and a corrected curve.
+    """
     parser = argparse.ArgumentParser(
         description="Display PSF from .npy file for Richardson–Lucy diagnostics."
     )

@@ -64,6 +64,25 @@ def _center_and_crop_psf(psf: np.ndarray, half_width: int = 50) -> np.ndarray:
 
 
 def main():
+    """CLI entrypoint: measure and save a PSF from a narrow emission line.
+
+    Inputs:
+        Command-line args:
+        - `--output`: output `.npy` path
+        - `--channel`: channel index in the configured spectrometer channels list
+        - `--frames`: number of frames to average (optional)
+        - `--no-dark-flat`: skip dark/flat correction
+        - `--frame`: load an existing captured frame `.npy` instead of capturing
+        - `--baseline-frac`: baseline estimation fraction for PSF extraction
+        - `--config`: optional path to spectrometer config
+    Output:
+        Saves a 1D PSF NumPy array to `args.output` normalized to sum ~= 1.
+    Transformation:
+        - Resolves ROI start/end/thickness from selected channel config.
+        - Captures or loads a frame, applies optional dark/flat correction.
+        - Extracts a line profile, subtracts baseline, clips negatives, normalizes to sum=1.
+        - Centers/crops the PSF to a fixed odd length for Richardson–Lucy deconvolution.
+    """
     parser = argparse.ArgumentParser(
         description="Measure PSF from narrow emission line. Output: .npy file for Richardson–Lucy."
     )
