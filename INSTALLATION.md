@@ -23,8 +23,9 @@ Options: `--no-mediamtx` (mediamtx on another host), `--no-spectrometer`, `--use
 Install system packages:
 
 ```bash
-sudo apt install -y ffmpeg v4l-utils jq python3-paho-mqtt
+sudo apt install -y ffmpeg v4l-utils jq python3 python3-venv python3-full
 ```
+Then create a venv and install packages (or run `install/install.sh` which does this automatically).
 
 ## 2. Clone and Configure
 
@@ -122,7 +123,7 @@ After=network.target
 
 [Service]
 User=raspberry
-ExecStart=/usr/bin/python3 /home/raspberry/mqtt_camera_control.py
+ExecStart=/home/raspberry/spectrometer-sc132/venv/bin/python /home/raspberry/mqtt_camera_control.py
 Restart=always
 
 [Install]
@@ -285,9 +286,9 @@ The spectrometer subproject captures spectra from the same camera. See [spectrom
 
 **Prerequisites**: RTSP stream must be **OFF** (V4L2 device is exclusive). Stop stream before running spectrometer scripts.
 
-1. Install spectrometer Python deps: `pip install -r spectrometer/requirements.txt`
+1. Install spectrometer Python deps: run `install/install.sh` (creates venv and installs deps), or manually: `venv/bin/pip install -r spectrometer/requirements.txt`
 2. Add `spectrometer` section to `env_config.json` (see `env_config.example.json`)
-3. Run `python3 spectrometer/scripts/spectrometer_service.py` (or add systemd unit)
+3. Run `venv/bin/python spectrometer/scripts/spectrometer_service.py` (or add systemd unit via install.sh)
 4. Home Assistant integration: see [spectrometer/docs/homeassistant_spectrometer.yaml](spectrometer/docs/homeassistant_spectrometer.yaml)
 
 ## 8. Verify

@@ -12,9 +12,6 @@ Base path: `/api`
 | GET/POST | `/spectrometer/interval_ms` | Get/set interval (ms) |
 | GET/POST | `/spectrometer/processing_frame_average_n` | Frame average count |
 | GET/POST | `/spectrometer/processing_dark_flat_enabled` | Dark/flat correction |
-| GET/POST | `/spectrometer/processing_wiener_enabled` | Wiener deconvolution |
-| GET/POST | `/spectrometer/processing_wiener_psf_sigma` | Wiener PSF sigma |
-| GET/POST | `/spectrometer/processing_wiener_regularization` | Wiener regularization |
 | GET/POST | `/spectrometer/processing_richardson_lucy_enabled` | Richardson–Lucy deconvolution |
 | GET/POST | `/spectrometer/processing_richardson_lucy_psf_sigma` | Richardson–Lucy PSF sigma (fallback) |
 | GET/POST | `/spectrometer/processing_richardson_lucy_psf_path` | Richardson–Lucy custom PSF path (.npy) |
@@ -60,7 +57,12 @@ Base path: `/api`
   "intensities": [0.1, 0.2, ...],
   "meta": {
     "shutter_us": 4100,
-    "gain_db": 1.0
+    "gain_db": 1.0,
+    "processing": {
+      "frame_average_n": 4,
+      "dark_flat_applied": true,
+      "richardson_lucy_applied": false
+    }
   }
 }
 ```

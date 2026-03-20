@@ -6,7 +6,6 @@ Optional deconvolution step for spectrometer signal processing. Recovers resolut
 
 - **Algorithm**: Richardson–Lucy iterative deconvolution (custom implementation)
 - **Purpose**: Sharpen spectral peaks; recover resolution when using a wider slit for higher sensitivity
-- **Mutually exclusive with**: Wiener deconvolution (only one active at a time; Richardson–Lucy takes precedence when both enabled)
 
 ## Parameters
 
@@ -45,7 +44,7 @@ The current implementation uses a **Gaussian PSF**. Real slit shapes produce dif
 - Very sharp rectangular slit with minimal diffraction → top-hat PSF; Gaussian can cause ringing.
 - Strongly non-Gaussian measured ILS → consider empirical PSF (see below).
 
-**Custom / measured PSF**: Set `richardson_lucy_psf_path` to a `.npy` file containing a 1D NumPy array. The array is normalized to sum=1, centered (peak at middle), and can be shorter than the spectrum. Same path is used by Wiener deconvolution. Leave empty to use Gaussian with `richardson_lucy_psf_sigma`.
+**Custom / measured PSF**: Set `richardson_lucy_psf_path` to a `.npy` file containing a 1D NumPy array. The array is normalized to sum=1, centered (peak at middle), and can be shorter than the spectrum. Leave empty to use Gaussian with `richardson_lucy_psf_sigma`.
 
 ---
 
@@ -73,7 +72,7 @@ The current implementation uses a **Gaussian PSF**. Real slit shapes produce dif
 |-----|-----------------|------|
 | High (strong peaks) | 20–50 | Maximize resolution recovery |
 | Medium | 10–20 | Good default |
-| Low (weak signals) | 5–15 | Prefer Wiener or fewer iterations |
+| Low (weak signals) | 5–15 | Use fewer iterations |
 | Very low | 0 (off) | Skip deconvolution |
 
 **Early stopping**: Iteration count acts as regularization. Stop before noise dominates; typical sweet spot is 10–30 for most spectra.
@@ -101,7 +100,7 @@ The pipeline applies these in the correct order automatically.
 ### SNR and frame averaging
 
 - Deconvolution amplifies noise. Use **frame_average_n ≥ 4** (or higher) when SNR is marginal.
-- For weak signals, prefer **Wiener** or disable deconvolution.
+- For weak signals, prefer fewer iterations or disable deconvolution.
 
 ### Measuring PSF empirically (custom PSF)
 
@@ -132,7 +131,7 @@ Use the `measure_psf.py` script:
 
 ## Weak-Signal Notes
 
-Richardson–Lucy amplifies noise more than Wiener. For weak signals (near noise floor), prefer Wiener or use few iterations (5–15). See [SIGNAL_PROCESSING_RESEARCH.md](SIGNAL_PROCESSING_RESEARCH.md).
+Richardson–Lucy amplifies noise. For weak signals (near noise floor), use few iterations (5–15). See [SIGNAL_PROCESSING_RESEARCH.md](SIGNAL_PROCESSING_RESEARCH.md).
 
 ---
 

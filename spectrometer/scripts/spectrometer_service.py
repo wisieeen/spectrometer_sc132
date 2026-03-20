@@ -4,7 +4,6 @@ Main spectrometer service. Captures frames, extracts spectra, publishes via outp
 Prerequisite: RTSP stream OFF.
 MQTT commands: start, stop (continuous), single (on-demand), interval_ms,
   processing_frame_average_n, processing_dark_flat_enabled,
-  processing_wiener_enabled, processing_wiener_psf_sigma, processing_wiener_regularization,
   processing_richardson_lucy_enabled, processing_richardson_lucy_psf_sigma, processing_richardson_lucy_iterations.
 """
 import json
@@ -19,14 +18,13 @@ import paho.mqtt.client as mqtt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib.config import load_spectrometer_config, save_spectrometer_config
+from lib.config import load_spectrometer_config, save_spectrometer_config, get_processing_cfg
 from lib.env_config import load_env, load_camera_config
 from lib.spectrum import extract_line_profile, fit_calibration, compute_spectrum
 from lib.output.mqtt_adapter import MQTTAdapter
 from lib.signal_processing import (
     apply_dark_flat_frame,
     load_dark_flat,
-    wiener_deconvolve,
     richardson_lucy_deconvolve,
 )
 from scripts.camera_capture import capture_frame, capture_frames_averaged
@@ -44,61 +42,12 @@ def _get_output_adapter(env=None):
     )
 
 
-def _get_processing_cfg(spec_cfg):
-    """Extract processing settings from spectrometer config."""
-    proc = spec_cfg.get("processing", {}) or {}
-    try:
-        frame_average_n = int(proc.get("frame_average_n", 1))
-    except (TypeError, ValueError):
-        frame_average_n = 1
-    frame_average_n = max(1, min(1000, frame_average_n))
-
-    try:
-        wiener_psf_sigma = float(proc.get("wiener_psf_sigma", 3.0))
-    except (TypeError, ValueError):
-        wiener_psf_sigma = 3.0
-    wiener_psf_sigma = max(0.5, min(20.0, wiener_psf_sigma))
-
-    try:
-        wiener_regularization = float(proc.get("wiener_regularization", 0.01))
-    except (TypeError, ValueError):
-        wiener_regularization = 0.01
-    wiener_regularization = max(0.0001, min(1.0, wiener_regularization))
-
-    try:
-        richardson_lucy_iterations = int(proc.get("richardson_lucy_iterations", 15))
-    except (TypeError, ValueError):
-        richardson_lucy_iterations = 15
-    richardson_lucy_iterations = max(1, min(100, richardson_lucy_iterations))
-
-    try:
-        richardson_lucy_psf_sigma = float(proc.get("richardson_lucy_psf_sigma", 3.0))
-    except (TypeError, ValueError):
-        richardson_lucy_psf_sigma = 3.0
-    richardson_lucy_psf_sigma = max(0.5, min(20.0, richardson_lucy_psf_sigma))
-    richardson_lucy_psf_path = (proc.get("richardson_lucy_psf_path") or "").strip() or None
-
-    return {
-        "frame_average_n": frame_average_n,
-        "dark_flat_enabled": bool(proc.get("dark_flat_enabled", False)),
-        "dark_frame_path": proc.get("dark_frame_path") or None,
-        "flat_frame_path": proc.get("flat_frame_path") or None,
-        "wiener_enabled": bool(proc.get("wiener_enabled", False)),
-        "wiener_psf_sigma": wiener_psf_sigma,
-        "wiener_regularization": wiener_regularization,
-        "richardson_lucy_enabled": bool(proc.get("richardson_lucy_enabled", False)),
-        "richardson_lucy_psf_sigma": richardson_lucy_psf_sigma,
-        "richardson_lucy_psf_path": richardson_lucy_psf_path,
-        "richardson_lucy_iterations": richardson_lucy_iterations,
-    }
-
-
 def _acquire_frame(spec_cfg, dark, flat):
     """
     Capture and optionally process frame(s).
     Applies frame averaging first, then dark/flat correction if enabled.
     """
-    proc = _get_processing_cfg(spec_cfg)
+    proc = get_processing_cfg(spec_cfg)
     n = max(1, proc["frame_average_n"])
 
     if n > 1:
@@ -150,24 +99,13 @@ def _process_frame(frame, spec_cfg, output, processing_meta=None, dark=None):
         if len(intensities) == 0:
             continue
 
-        proc = _get_processing_cfg(spec_cfg)
+        proc = get_processing_cfg(spec_cfg)
         if proc["richardson_lucy_enabled"]:
             intensities = richardson_lucy_deconvolve(
                 intensities,
                 psf_sigma_px=proc["richardson_lucy_psf_sigma"],
                 num_iterations=proc["richardson_lucy_iterations"],
                 psf_path=proc.get("richardson_lucy_psf_path"),
-            )
-        elif proc["wiener_enabled"]:
-            dark_spec = None
-            if dark is not None and dark.ndim == 2:
-                dark_spec = extract_line_profile(dark, start, end, thickness)
-            intensities = wiener_deconvolve(
-                intensities,
-                psf_sigma_px=proc["wiener_psf_sigma"],
-                regularization=proc["wiener_regularization"],
-                psf_path=proc.get("richardson_lucy_psf_path"),
-                dark_spectrum=dark_spec,
             )
 
         if cal and "coefficients" in cal:
@@ -207,16 +145,13 @@ def main():
     interval_ms = 1000
 
     def _publish_processing_state(client):
-        proc = _get_processing_cfg(load_spectrometer_config())
+        proc = get_processing_cfg(load_spectrometer_config())
         client.publish(st + "/processing_frame_average_n", str(proc["frame_average_n"]), retain=True)
         client.publish(
             st + "/processing_dark_flat_enabled",
             "true" if proc["dark_flat_enabled"] else "false",
             retain=True,
         )
-        client.publish(st + "/processing_wiener_enabled", "true" if proc["wiener_enabled"] else "false", retain=True)
-        client.publish(st + "/processing_wiener_psf_sigma", str(proc["wiener_psf_sigma"]), retain=True)
-        client.publish(st + "/processing_wiener_regularization", str(proc["wiener_regularization"]), retain=True)
         client.publish(
             st + "/processing_richardson_lucy_enabled",
             "true" if proc["richardson_lucy_enabled"] else "false",
@@ -260,33 +195,6 @@ def main():
             proc["dark_flat_enabled"] = enabled
             save_spectrometer_config(spec_cfg)
             client.publish(st + "/processing_dark_flat_enabled", "true" if enabled else "false", retain=True)
-        elif topic == "processing_wiener_enabled":
-            enabled = payload.lower() in ("true", "1", "on", "yes")
-            spec_cfg = load_spectrometer_config()
-            proc = spec_cfg.setdefault("processing", {})
-            proc["wiener_enabled"] = enabled
-            save_spectrometer_config(spec_cfg)
-            client.publish(st + "/processing_wiener_enabled", "true" if enabled else "false", retain=True)
-        elif topic == "processing_wiener_psf_sigma":
-            try:
-                val = max(0.5, min(20.0, float(payload)))
-            except (ValueError, TypeError):
-                val = 3.0
-            spec_cfg = load_spectrometer_config()
-            proc = spec_cfg.setdefault("processing", {})
-            proc["wiener_psf_sigma"] = val
-            save_spectrometer_config(spec_cfg)
-            client.publish(st + "/processing_wiener_psf_sigma", str(val), retain=True)
-        elif topic == "processing_wiener_regularization":
-            try:
-                val = max(0.0001, min(1.0, float(payload)))
-            except (ValueError, TypeError):
-                val = 0.01
-            spec_cfg = load_spectrometer_config()
-            proc = spec_cfg.setdefault("processing", {})
-            proc["wiener_regularization"] = val
-            save_spectrometer_config(spec_cfg)
-            client.publish(st + "/processing_wiener_regularization", str(val), retain=True)
         elif topic == "processing_richardson_lucy_enabled":
             enabled = payload.lower() in ("true", "1", "on", "yes")
             spec_cfg = load_spectrometer_config()
@@ -323,13 +231,12 @@ def main():
             client.publish(st + "/processing_richardson_lucy_psf_path", path or "", retain=True)
         elif topic == "single":
             spec_cfg = load_spectrometer_config()
-            proc = _get_processing_cfg(spec_cfg)
+            proc = get_processing_cfg(spec_cfg)
             dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
             frame = _acquire_frame(spec_cfg, dark, flat)
             pm = {
                 "frame_average_n": proc["frame_average_n"],
                 "dark_flat_applied": proc["dark_flat_enabled"] and (dark is not None or flat is not None),
-                "wiener_applied": proc["wiener_enabled"],
                 "richardson_lucy_applied": proc["richardson_lucy_enabled"],
             }
             _process_frame(frame, spec_cfg, output, pm, dark=dark)
@@ -357,13 +264,12 @@ def main():
             if running:
                 client.publish(st + "/status", "running", retain=True)
                 spec_cfg = load_spectrometer_config()
-                proc = _get_processing_cfg(spec_cfg)
+                proc = get_processing_cfg(spec_cfg)
                 dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
                 frame = _acquire_frame(spec_cfg, dark, flat)
                 pm = {
                     "frame_average_n": proc["frame_average_n"],
                     "dark_flat_applied": proc["dark_flat_enabled"] and (dark is not None or flat is not None),
-                    "wiener_applied": proc["wiener_enabled"],
                     "richardson_lucy_applied": proc["richardson_lucy_enabled"],
                 }
                 _process_frame(frame, spec_cfg, output, pm, dark=dark)

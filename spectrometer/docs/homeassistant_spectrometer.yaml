@@ -13,7 +13,6 @@
 # MQTT topics (configurable via env_config.json spectrometer.cmd_topic / state_topic):
 #   lab/spectrometer/cmd/start | stop | single | interval_ms | preview
 #   lab/spectrometer/cmd/processing_frame_average_n | processing_dark_flat_enabled
-#   lab/spectrometer/cmd/processing_wiener_enabled | processing_wiener_psf_sigma | processing_wiener_regularization
 #   lab/spectrometer/cmd/processing_richardson_lucy_enabled | processing_richardson_lucy_psf_sigma | processing_richardson_lucy_iterations
 #   lab/spectrometer/state/status | interval_ms | processing_*
 #   lab/spectrometer/state/spectrum/{channel_id}
@@ -56,25 +55,6 @@ mqtt:
       mode: slider
       unit_of_measurement: "ms"
 
-    - name: "Spectrometer Wiener PSF Sigma"
-      unique_id: spectrometer_wiener_psf_sigma
-      command_topic: "lab/spectrometer/cmd/processing_wiener_psf_sigma"
-      state_topic: "lab/spectrometer/state/processing_wiener_psf_sigma"
-      min: 0.5
-      max: 20
-      step: 0.5
-      mode: slider
-      unit_of_measurement: "px"
-
-    - name: "Spectrometer Wiener Regularization"
-      unique_id: spectrometer_wiener_regularization
-      command_topic: "lab/spectrometer/cmd/processing_wiener_regularization"
-      state_topic: "lab/spectrometer/state/processing_wiener_regularization"
-      min: 0.0001
-      max: 0.5
-      step: 0.001
-      mode: slider
-
     - name: "Spectrometer Richardson-Lucy PSF Sigma"
       unique_id: spectrometer_richardson_lucy_psf_sigma
       command_topic: "lab/spectrometer/cmd/processing_richardson_lucy_psf_sigma"
@@ -95,14 +75,6 @@ mqtt:
       mode: slider
 
   switch:
-    - name: "Spectrometer Wiener Deconvolution"
-      unique_id: spectrometer_wiener_enabled
-      command_topic: "lab/spectrometer/cmd/processing_wiener_enabled"
-      state_topic: "lab/spectrometer/state/processing_wiener_enabled"
-      payload_on: "true"
-      payload_off: "false"
-      value_template: "{{ value }}"
-
     - name: "Spectrometer Richardson-Lucy Deconvolution"
       unique_id: spectrometer_richardson_lucy_enabled
       command_topic: "lab/spectrometer/cmd/processing_richardson_lucy_enabled"
@@ -190,12 +162,6 @@ cards:
   - type: entities
     title: Signal Processing
     entities:
-      - entity: switch.spectrometer_wiener_deconvolution
-        name: Wiener Deconvolution
-      - entity: number.spectrometer_wiener_psf_sigma
-        name: Wiener PSF Sigma
-      - entity: number.spectrometer_wiener_regularization
-        name: Wiener Regularization
       - entity: switch.spectrometer_richardson_lucy_deconvolution
         name: Richardson-Lucy Deconvolution
       - entity: number.spectrometer_richardson_lucy_psf_sigma

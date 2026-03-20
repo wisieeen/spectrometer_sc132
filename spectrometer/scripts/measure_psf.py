@@ -15,18 +15,12 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib.config import load_spectrometer_config
+from lib.config import load_spectrometer_config, get_processing_cfg
 from lib.signal_processing import apply_dark_flat_frame, load_dark_flat
 from lib.spectrum import extract_line_profile
 from scripts.camera_capture import capture_frame, capture_frames_averaged
 
 
-def _get_processing_cfg(spec_cfg):
-    proc = spec_cfg.get("processing", {}) or {}
-    n = max(1, min(1000, int(proc.get("frame_average_n", 10))))
-    dark_path = proc.get("dark_frame_path") or None
-    flat_path = proc.get("flat_frame_path") or None
-    return n, dark_path, flat_path
 
 
 def _extract_psf_from_profile(profile: np.ndarray, baseline_frac: float = 0.1) -> np.ndarray:
@@ -142,7 +136,8 @@ def main():
         if frame.ndim == 3:
             frame = frame[:, :, 0] if frame.shape[2] == 1 else np.mean(frame, axis=2)
     else:
-        n_frames, dark_path, flat_path = _get_processing_cfg(spec_cfg)
+        proc = get_processing_cfg(spec_cfg)
+        n_frames, dark_path, flat_path = proc["frame_average_n"], proc["dark_frame_path"], proc["flat_frame_path"]
         n_frames = args.frames if args.frames is not None else n_frames
         dark, flat = (None, None) if args.no_dark_flat else load_dark_flat(dark_path, flat_path)
         print(f"Capturing {n_frames} frame(s)...", file=sys.stderr)
@@ -169,7 +164,7 @@ def main():
     out_path = args.output
     np.save(out_path, psf)
     print(f"PSF saved: {out_path} (length={len(psf)}, sum={psf.sum():.6f})")
-    print(f"Set richardson_lucy_psf_path to: {os.path.abspath(out_path)} (used by Richardson–Lucy and Wiener)")
+    print(f"Set richardson_lucy_psf_path to: {os.path.abspath(out_path)}")
 
 
 if __name__ == "__main__":

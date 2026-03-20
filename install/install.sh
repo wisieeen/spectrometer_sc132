@@ -28,25 +28,27 @@ echo ""
 # --- 1. System packages ---
 echo "[1/7] Installing system packages..."
 sudo apt update
-sudo apt install -y ffmpeg v4l-utils jq python3-pip python3-venv
+sudo apt install -y ffmpeg v4l-utils jq python3 python3-venv python3-full
 
-# RPi.GPIO for GPIO bootstrap (Raspberry Pi only; harmless on other platforms)
-sudo apt install -y python3-rpi.gpio 2>/dev/null || true
+# AP mode uses NetworkManager (nmcli) on Bookworm — no hostapd/dnsmasq needed
+# iptables for spectrometer-ap-firewall (allow incoming on wlan0)
+sudo apt install -y iptables 2>/dev/null || true
 
-# hostapd, dnsmasq for WiFi AP mode (GPIO bootstrap)
-sudo apt install -y hostapd dnsmasq 2>/dev/null || true
+# --- 2. Python virtual environment ---
+VENV_DIR="$PROJECT_DIR/venv"
+echo "[2/7] Creating virtual environment and installing Python packages..."
+if [ ! -d "$VENV_DIR" ]; then
+  python3 -m venv "$VENV_DIR"
+  echo "  Created venv at $VENV_DIR"
+fi
+VENV_PYTHON="$VENV_DIR/bin/python"
+VENV_PIP="$VENV_DIR/bin/pip"
 
-# paho-mqtt: prefer pip for newer version (VERSIONS.md: 2.1.0+)
-# python3-paho-mqtt is often older; pip gives control
-sudo apt install -y python3-paho-mqtt 2>/dev/null || true
-
-# --- 2. Python packages ---
-echo "[2/7] Installing Python packages..."
-pip3 install --user --break-system-packages paho-mqtt 2>/dev/null || pip3 install --user paho-mqtt
+"$VENV_PIP" install --upgrade pip
+"$VENV_PIP" install paho-mqtt RPi.GPIO
 
 if [ "$SPECTROMETER_INSTALL" = true ]; then
-  pip3 install --user --break-system-packages -r "$PROJECT_DIR/spectrometer/requirements.txt" 2>/dev/null || \
-  pip3 install --user -r "$PROJECT_DIR/spectrometer/requirements.txt"
+  "$VENV_PIP" install -r "$PROJECT_DIR/spectrometer/requirements.txt"
 fi
 
 # --- 3. mediamtx (optional) ---
@@ -178,26 +180,104 @@ echo "[6/7] Installing systemd services..."
 # Update paths in env_config paths.home if different
 HOME_DIR=$(eval echo ~$INSTALL_USER)
 
+# spectrometer-diagnostics.service (appends post-boot state to boot partition log - visible when SD card read on PC)
+chmod +x "$PROJECT_DIR/install/diagnostics.sh"
+sudo tee /etc/systemd/system/spectrometer-diagnostics.service > /dev/null << EOF
+[Unit]
+Description=Spectrometer post-boot diagnostics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$PROJECT_DIR/install/diagnostics.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# spectrometer-network-recovery.service (runs at boot; if trigger file in boot partition, restores default network)
+chmod +x "$PROJECT_DIR/install/network_recovery.sh"
+sudo tee /etc/systemd/system/spectrometer-network-recovery.service > /dev/null << EOF
+[Unit]
+Description=Spectrometer Network Recovery
+DefaultDependencies=false
+After=local-fs.target
+Before=spectrometer-bootstrap.service network.target
+
+[Service]
+Type=oneshot
+ExecStart=$PROJECT_DIR/install/network_recovery.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+EOF
+
+# Clean up legacy AP services from older installs
+for svc in spectrometer-unmask-hostapd.service spectrometer-ap-ip.service; do
+  sudo systemctl disable "$svc" 2>/dev/null || true
+  sudo rm -f "/etc/systemd/system/$svc"
+done
+
+# Clean up old firewall service (replaced by NM dispatcher)
+sudo systemctl disable spectrometer-ap-firewall.service 2>/dev/null || true
+sudo rm -f /etc/systemd/system/spectrometer-ap-firewall.service
+
+# NM dispatcher: keep AP firewall/state consistent after NM link events
+sudo mkdir -p /etc/NetworkManager/dispatcher.d
+sudo tee /etc/NetworkManager/dispatcher.d/90-spectrometer-ap << 'DISPEOF'
+#!/bin/bash
+# Delegate to the main AP/STA hook.
+IFACE="$1"
+ACTION="$2"
+if [ "$IFACE" = "wlan0" ] && [ -x /usr/local/bin/spectrometer-nm-ap-sta-hook.sh ]; then
+    case "$ACTION" in
+      up|down|dhcp4-change|connectivity-change|reapply)
+        /usr/local/bin/spectrometer-nm-ap-sta-hook.sh firewall-only
+        ;;
+    esac
+fi
+DISPEOF
+sudo chmod 755 /etc/NetworkManager/dispatcher.d/90-spectrometer-ap
+
+# First layer: NetworkManager start hook (ExecStartPost) to enforce AP/STA switching
+sudo cp "$PROJECT_DIR/install/nm_ap_sta_hook.sh" /usr/local/bin/spectrometer-nm-ap-sta-hook.sh
+sudo chmod 755 /usr/local/bin/spectrometer-nm-ap-sta-hook.sh
+
+sudo mkdir -p /lib/systemd/system/NetworkManager.service.d
+sudo tee /lib/systemd/system/NetworkManager.service.d/10-spectrometer-ap-sta.conf > /dev/null << EOF
+[Service]
+ExecStartPost=/usr/local/bin/spectrometer-nm-ap-sta-hook.sh
+EOF
+
+# reload systemd so NetworkManager picks up the drop-in immediately after reboot
+sudo systemctl daemon-reload
+
 # spectrometer-bootstrap.service (runs early, reads GPIO, creates mode/flag files)
 chmod +x "$PROJECT_DIR/install/gpio_bootstrap.py"
 sudo tee /etc/systemd/system/spectrometer-bootstrap.service > /dev/null << EOF
 [Unit]
 Description=Spectrometer GPIO Bootstrap
 DefaultDependencies=false
-After=sysinit.target local-fs.target
+After=sysinit.target local-fs.target spectrometer-network-recovery.service
 Before=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 $PROJECT_DIR/install/gpio_bootstrap.py
+ExecStart=$VENV_PYTHON $PROJECT_DIR/install/gpio_bootstrap.py
 WorkingDirectory=$PROJECT_DIR
 Environment=ENV_CONFIG=$PROJECT_DIR/env_config.json
 
 [Install]
 WantedBy=sysinit.target
 EOF
+sudo systemctl enable spectrometer-diagnostics.service
+sudo systemctl enable spectrometer-network-recovery.service
 sudo systemctl enable spectrometer-bootstrap.service
-echo "  spectrometer-bootstrap.service: installed, enabled at boot"
+echo "  spectrometer-network-recovery, spectrometer-bootstrap, spectrometer-diagnostics: installed, enabled at boot"
+echo "  NM dispatcher 90-spectrometer-ap: installed (allows incoming traffic in AP mode)"
 
 # mqtt-camera.service (conditional on MQTT GPIO)
 sudo tee /etc/systemd/system/mqtt-camera.service > /dev/null << EOF
@@ -209,7 +289,7 @@ ConditionPathExists=/run/spectrometer-mqtt-enabled
 [Service]
 User=$INSTALL_USER
 Environment=ENV_CONFIG=$PROJECT_DIR/env_config.json
-ExecStart=/usr/bin/python3 $PROJECT_DIR/mqtt_camera_control.py
+ExecStart=$VENV_PYTHON $PROJECT_DIR/mqtt_camera_control.py
 WorkingDirectory=$PROJECT_DIR
 Restart=always
 RestartSec=5
@@ -270,7 +350,7 @@ ConditionPathExists=!/run/spectrometer-webserver-enabled
 [Service]
 User=$INSTALL_USER
 Environment=ENV_CONFIG=$PROJECT_DIR/env_config.json
-ExecStart=/usr/bin/python3 $PROJECT_DIR/spectrometer/scripts/spectrometer_service.py
+ExecStart=$VENV_PYTHON $PROJECT_DIR/spectrometer/scripts/spectrometer_service.py
 WorkingDirectory=$PROJECT_DIR
 Restart=always
 RestartSec=5
@@ -293,7 +373,7 @@ ConditionPathExists=/run/spectrometer-webserver-enabled
 [Service]
 User=$INSTALL_USER
 Environment=ENV_CONFIG=$PROJECT_DIR/env_config.json
-ExecStart=/usr/bin/python3 $PROJECT_DIR/spectrometer/scripts/spectrometer_webserver.py
+ExecStart=$VENV_PYTHON $PROJECT_DIR/spectrometer/scripts/spectrometer_webserver.py
 WorkingDirectory=$PROJECT_DIR
 Restart=always
 RestartSec=5
@@ -301,7 +381,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-  echo "  spectrometer-webserver.service: installed (enable manually if needed)"
+  sudo systemctl enable spectrometer-webserver.service
+  echo "  spectrometer-webserver.service: installed, enabled at boot"
 fi
 
 sudo systemctl daemon-reload
@@ -311,10 +392,13 @@ echo "  mqtt-camera.service, rtsp-camera.service: enabled at boot"
 
 # --- 7. Sudoers ---
 echo "[7/7] Configuring sudoers..."
+chmod +x "$PROJECT_DIR/install/apply_wifi_credentials.sh"
 SUDOERS_FILE="/etc/sudoers.d/spectrometer-sc132"
 sudo tee "$SUDOERS_FILE" > /dev/null << EOF
 # Passwordless systemctl for MQTT camera control (start/stop mediamtx, rtsp-camera, shutdown, reboot)
 $INSTALL_USER ALL=(ALL) NOPASSWD: /bin/systemctl start mediamtx.service, /bin/systemctl stop mediamtx.service, /bin/systemctl start rtsp-camera.service, /bin/systemctl stop rtsp-camera.service, /bin/systemctl restart rtsp-camera.service, /sbin/shutdown
+# Apply WiFi credentials (copy to wpa_supplicant, restart) - used by webserver when saving STA credentials
+$INSTALL_USER ALL=(ALL) NOPASSWD: $PROJECT_DIR/install/apply_wifi_credentials.sh
 EOF
 sudo chmod 440 "$SUDOERS_FILE"
 echo "  Sudoers: $SUDOERS_FILE"

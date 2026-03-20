@@ -17,6 +17,7 @@ Quick reference to all documentation files. Links are relative to this file.
 | [../../docs/WEBSERVER_API.md](../../docs/WEBSERVER_API.md)           | Webserver REST API spec                             |
 | [../../docs/WEBSERVER_UI.md](../../docs/WEBSERVER_UI.md)             | Webserver interface layout, themes                  |
 | [../../docs/TROUBLESHOOTING_WEBSERVER_STREAM_SPECTRUM.md](../../docs/TROUBLESHOOTING_WEBSERVER_STREAM_SPECTRUM.md) | Webserver: video stream / continuous spectrum issues |
+| [../../docs/CODEBASE_AUDIT_REPORT.md](../../docs/CODEBASE_AUDIT_REPORT.md) | Conflicts, inconsistencies, simplification opportunities |
 
 
 ---

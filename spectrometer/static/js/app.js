@@ -360,15 +360,6 @@
   document.getElementById('darkFlatEnabled')?.addEventListener('change', (e) => {
     apiSilent('POST', '/spectrometer/processing_dark_flat_enabled', { value: e.target.checked });
   });
-  document.getElementById('wienerEnabled')?.addEventListener('change', (e) => {
-    apiSilent('POST', '/spectrometer/processing_wiener_enabled', { value: e.target.checked });
-  });
-  document.getElementById('wienerPsfSigma')?.addEventListener('change', (e) => {
-    apiSilent('POST', '/spectrometer/processing_wiener_psf_sigma', { value: e.target.value });
-  });
-  document.getElementById('wienerReg')?.addEventListener('change', (e) => {
-    apiSilent('POST', '/spectrometer/processing_wiener_regularization', { value: e.target.value });
-  });
   document.getElementById('richardsonLucyEnabled')?.addEventListener('change', (e) => {
     apiSilent('POST', '/spectrometer/processing_richardson_lucy_enabled', { value: e.target.checked });
   });
@@ -432,9 +423,6 @@
       document.getElementById('intervalMs').value = st.interval_ms || 1000;
       document.getElementById('frameAverageN').value = st.processing?.frame_average_n ?? 1;
       document.getElementById('darkFlatEnabled').checked = st.processing?.dark_flat_enabled ?? false;
-      document.getElementById('wienerEnabled').checked = st.processing?.wiener_enabled ?? false;
-      document.getElementById('wienerPsfSigma').value = st.processing?.wiener_psf_sigma ?? 3;
-      document.getElementById('wienerReg').value = st.processing?.wiener_regularization ?? 0.01;
       document.getElementById('richardsonLucyEnabled').checked = st.processing?.richardson_lucy_enabled ?? false;
       document.getElementById('richardsonLucyPsfSigma').value = st.processing?.richardson_lucy_psf_sigma ?? 3;
       document.getElementById('richardsonLucyIterations').value = st.processing?.richardson_lucy_iterations ?? 15;
@@ -547,6 +535,8 @@
     document.getElementById('mqttBroker').value = mqtt.broker || '';
     document.getElementById('mqttPort').value = mqtt.port || 1883;
     document.getElementById('mqttUser').value = mqtt.user || '';
+    const wifi = await api('GET', '/config/wifi');
+    if (wifi.ssid) document.getElementById('wifiSsid').value = wifi.ssid;
   })();
 
   // --- Init ---

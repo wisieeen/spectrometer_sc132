@@ -64,17 +64,6 @@
           <label><input type="checkbox" id="darkFlatEnabled"> Dark/flat correction</label>
         </div>
         <div class="control-row">
-          <label><input type="checkbox" id="wienerEnabled"> Wiener deconvolution</label>
-        </div>
-        <div class="control-row">
-          <label>Wiener PSF sigma:</label>
-          <input type="number" id="wienerPsfSigma" min="0.5" max="20" step="0.1" value="3">
-        </div>
-        <div class="control-row">
-          <label>Wiener regularization:</label>
-          <input type="number" id="wienerReg" min="0.0001" max="1" step="0.001" value="0.01">
-        </div>
-        <div class="control-row">
           <label><input type="checkbox" id="richardsonLucyEnabled"> Richardson–Lucy deconvolution</label>
         </div>
         <div class="control-row">
@@ -172,6 +161,7 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

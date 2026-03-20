@@ -9,7 +9,7 @@
 ## Spectrometer Tab
 
 - **Top**: Spectrum chart (X = wavelength nm, Y = intensity)
-- **Bottom**: Parameter controls (start/stop/single, interval, frame average, dark/flat, Wiener, preview)
+- **Bottom**: Parameter controls (start/stop/single, interval, frame average, dark/flat, Richardson–Lucy, preview)
 
 **Spectrum chart**:
 - Local maxima: wavelength label above each peak, rotated 75°

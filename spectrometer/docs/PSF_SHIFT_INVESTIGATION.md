@@ -13,7 +13,7 @@ Processed spectrum is heavily shifted toward larger values after Richardson–Lu
 - **Wavelength shift**: spectral features move along the dispersion axis
 - **Intensity artifacts**: incorrect deconvolution response
 
-**Fix**: `measure_psf.py` centers the PSF (peak at center) and crops symmetrically before saving. Richardson–Lucy and Wiener expect this format.
+**Fix**: `measure_psf.py` centers the PSF (peak at center) and crops symmetrically before saving. Richardson–Lucy expects this format.
 
 ### 2. **Baseline subtraction in PSF extraction**
 
@@ -46,5 +46,5 @@ Check:
 
 ## Coder Notes
 
-- `measure_psf.py`: Centers PSF and crops symmetrically (50 px from peak) before save. Output is ready for Richardson–Lucy and Wiener.
-- `richardson_lucy.py` and `wiener.py`: Use `richardson_lucy_psf_path` for custom PSF. Both techniques share the same path.
+- `measure_psf.py`: Centers PSF and crops symmetrically (50 px from peak) before save. Output is ready for Richardson–Lucy.
+- `richardson_lucy.py`: Uses `richardson_lucy_psf_path` for custom PSF.

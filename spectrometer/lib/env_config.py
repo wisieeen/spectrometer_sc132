@@ -23,19 +23,32 @@ def load_env(path=None):
     return env
 
 
+def _get_camera_config_path(env=None):
+    """Resolve camera_config path from env or default."""
+    if env is None:
+        env = load_env()
+    cfg_path = env.get("paths", {}).get("camera_config", DEFAULT_CAMERA_CONFIG)
+    if not isinstance(cfg_path, str) or not cfg_path.strip():
+        cfg_path = DEFAULT_CAMERA_CONFIG
+    return cfg_path
+
+
 def load_camera_config(env=None):
     """
     Load camera_config.json.
     If env is provided, reads path from env['paths']['camera_config'].
     Otherwise loads env first, then camera config.
     """
-    if env is None:
-        env = load_env()
-    cfg_path = env.get("paths", {}).get("camera_config", DEFAULT_CAMERA_CONFIG)
-    if not isinstance(cfg_path, str) or not cfg_path.strip():
-        cfg_path = DEFAULT_CAMERA_CONFIG
+    cfg_path = _get_camera_config_path(env)
     with open(cfg_path) as f:
         cfg = json.load(f)
     if not isinstance(cfg, dict):
         raise ValueError("camera_config must be a JSON object (dict)")
     return cfg
+
+
+def save_camera_config(cfg, env=None):
+    """Save camera_config.json. Uses same path resolution as load_camera_config."""
+    cfg_path = _get_camera_config_path(env)
+    with open(cfg_path, "w") as f:
+        json.dump(cfg, f, indent=2)

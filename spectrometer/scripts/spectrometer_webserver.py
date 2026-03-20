@@ -19,13 +19,12 @@ from flask import Flask, jsonify, request, send_from_directory
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "static")
 
-from lib.config import load_spectrometer_config, save_spectrometer_config
-from lib.env_config import load_env, load_camera_config
+from lib.config import load_spectrometer_config, save_spectrometer_config, get_processing_cfg
+from lib.env_config import load_env, load_camera_config, save_camera_config, DEFAULT_ENV_CONFIG
 from lib.spectrum import extract_line_profile, fit_calibration, compute_spectrum
 from lib.signal_processing import (
     apply_dark_flat_frame,
     load_dark_flat,
-    wiener_deconvolve,
     richardson_lucy_deconvolve,
 )
 from scripts.camera_capture import capture_frame, capture_frames_averaged
@@ -39,47 +38,8 @@ _running = False
 _interval_ms = 1000
 
 
-def _get_processing_cfg(spec_cfg=None):
-    spec_cfg = spec_cfg or load_spectrometer_config()
-    proc = spec_cfg.get("processing", {}) or {}
-    try:
-        frame_average_n = max(1, min(1000, int(proc.get("frame_average_n", 1))))
-    except (TypeError, ValueError):
-        frame_average_n = 1
-    try:
-        wiener_psf_sigma = max(0.5, min(20.0, float(proc.get("wiener_psf_sigma", 3.0))))
-    except (TypeError, ValueError):
-        wiener_psf_sigma = 3.0
-    try:
-        wiener_regularization = max(0.0001, min(1.0, float(proc.get("wiener_regularization", 0.01))))
-    except (TypeError, ValueError):
-        wiener_regularization = 0.01
-    try:
-        richardson_lucy_iterations = max(1, min(100, int(proc.get("richardson_lucy_iterations", 15))))
-    except (TypeError, ValueError):
-        richardson_lucy_iterations = 15
-    try:
-        richardson_lucy_psf_sigma = max(0.5, min(20.0, float(proc.get("richardson_lucy_psf_sigma", 3.0))))
-    except (TypeError, ValueError):
-        richardson_lucy_psf_sigma = 3.0
-    richardson_lucy_psf_path = (proc.get("richardson_lucy_psf_path") or "").strip() or None
-    return {
-        "frame_average_n": frame_average_n,
-        "dark_flat_enabled": bool(proc.get("dark_flat_enabled", False)),
-        "dark_frame_path": proc.get("dark_frame_path") or None,
-        "flat_frame_path": proc.get("flat_frame_path") or None,
-        "wiener_enabled": bool(proc.get("wiener_enabled", False)),
-        "wiener_psf_sigma": wiener_psf_sigma,
-        "wiener_regularization": wiener_regularization,
-        "richardson_lucy_enabled": bool(proc.get("richardson_lucy_enabled", False)),
-        "richardson_lucy_psf_sigma": richardson_lucy_psf_sigma,
-        "richardson_lucy_psf_path": richardson_lucy_psf_path,
-        "richardson_lucy_iterations": richardson_lucy_iterations,
-    }
-
-
 def _acquire_frame(spec_cfg, dark, flat):
-    proc = _get_processing_cfg(spec_cfg)
+    proc = get_processing_cfg(spec_cfg)
     n = max(1, proc["frame_average_n"])
     if n > 1:
         frame = capture_frames_averaged(n)
@@ -92,19 +52,27 @@ def _acquire_frame(spec_cfg, dark, flat):
     return frame
 
 
-def _process_frame_to_dict(frame, spec_cfg, dark=None):
+def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None):
     import numpy as np
     from datetime import datetime, timezone
 
     cam_cfg = load_camera_config()
-    meta = {"shutter_us": cam_cfg.get("shutter"), "gain_db": cam_cfg.get("gain")}
+    proc = get_processing_cfg(spec_cfg)
+    meta = {
+        "shutter_us": cam_cfg.get("shutter"),
+        "gain_db": cam_cfg.get("gain"),
+        "processing": {
+            "frame_average_n": proc["frame_average_n"],
+            "dark_flat_applied": proc["dark_flat_enabled"] and (dark is not None or flat is not None),
+            "richardson_lucy_applied": proc["richardson_lucy_enabled"],
+        },
+    }
     calibrations = {
         c["id"]: c
         for c in spec_cfg.get("calibrations", [])
         if isinstance(c, dict) and isinstance(c.get("id"), str)
     }
     spectra = {}
-    proc = _get_processing_cfg(spec_cfg)
 
     for ch in spec_cfg.get("channels", []):
         if not isinstance(ch, dict) or "id" not in ch:
@@ -124,23 +92,13 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None):
         intensities = extract_line_profile(frame, start, end, thickness)
         if len(intensities) == 0:
             continue
+        proc = get_processing_cfg(spec_cfg)
         if proc["richardson_lucy_enabled"]:
             intensities = richardson_lucy_deconvolve(
                 intensities,
                 psf_sigma_px=proc["richardson_lucy_psf_sigma"],
                 num_iterations=proc["richardson_lucy_iterations"],
                 psf_path=proc.get("richardson_lucy_psf_path"),
-            )
-        elif proc["wiener_enabled"]:
-            dark_spec = None
-            if dark is not None and dark.ndim == 2:
-                dark_spec = extract_line_profile(dark, start, end, thickness)
-            intensities = wiener_deconvolve(
-                intensities,
-                psf_sigma_px=proc["wiener_psf_sigma"],
-                regularization=proc["wiener_regularization"],
-                psf_path=proc.get("richardson_lucy_psf_path"),
-                dark_spectrum=dark_spec,
             )
         if cal and "coefficients" in cal:
             coeffs = np.array(cal["coefficients"])
@@ -171,10 +129,10 @@ def _capture_loop():
             continue
         try:
             spec_cfg = load_spectrometer_config()
-            proc = _get_processing_cfg(spec_cfg)
+            proc = get_processing_cfg(spec_cfg)
             dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
             frame = _acquire_frame(spec_cfg, dark, flat)
-            spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark)
+            spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
             with _spectrum_lock:
                 _last_spectra.update(spectra)
         except Exception as e:
@@ -214,10 +172,10 @@ def api_spectrometer_single():
     global _last_spectra
     try:
         spec_cfg = load_spectrometer_config()
-        proc = _get_processing_cfg(spec_cfg)
+        proc = get_processing_cfg(spec_cfg)
         dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
         frame = _acquire_frame(spec_cfg, dark, flat)
-        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark)
+        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
         with _spectrum_lock:
             _last_spectra.update(spectra)
         ch = next(iter(spectra.keys()), None)
@@ -252,7 +210,7 @@ def api_processing_frame_average_n():
         spec_cfg.setdefault("processing", {})["frame_average_n"] = n
         save_spectrometer_config(spec_cfg)
         return jsonify({"processing_frame_average_n": n})
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     return jsonify({"processing_frame_average_n": proc["frame_average_n"]})
 
 
@@ -266,56 +224,8 @@ def api_processing_dark_flat():
         spec_cfg.setdefault("processing", {})["dark_flat_enabled"] = enabled
         save_spectrometer_config(spec_cfg)
         return jsonify({"processing_dark_flat_enabled": enabled})
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     return jsonify({"processing_dark_flat_enabled": proc["dark_flat_enabled"]})
-
-
-@app.route("/api/spectrometer/processing_wiener_enabled", methods=["GET", "POST"])
-def api_processing_wiener_enabled():
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        val = data.get("value", request.form.get("value", "false"))
-        enabled = str(val).lower() in ("true", "1", "on", "yes")
-        spec_cfg = load_spectrometer_config()
-        spec_cfg.setdefault("processing", {})["wiener_enabled"] = enabled
-        save_spectrometer_config(spec_cfg)
-        return jsonify({"processing_wiener_enabled": enabled})
-    proc = _get_processing_cfg()
-    return jsonify({"processing_wiener_enabled": proc["wiener_enabled"]})
-
-
-@app.route("/api/spectrometer/processing_wiener_psf_sigma", methods=["GET", "POST"])
-def api_processing_wiener_psf_sigma():
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        val = data.get("value", request.form.get("value"))
-        try:
-            v = max(0.5, min(20.0, float(val or 3.0)))
-        except (ValueError, TypeError):
-            v = 3.0
-        spec_cfg = load_spectrometer_config()
-        spec_cfg.setdefault("processing", {})["wiener_psf_sigma"] = v
-        save_spectrometer_config(spec_cfg)
-        return jsonify({"processing_wiener_psf_sigma": v})
-    proc = _get_processing_cfg()
-    return jsonify({"processing_wiener_psf_sigma": proc["wiener_psf_sigma"]})
-
-
-@app.route("/api/spectrometer/processing_wiener_regularization", methods=["GET", "POST"])
-def api_processing_wiener_regularization():
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        val = data.get("value", request.form.get("value"))
-        try:
-            v = max(0.0001, min(1.0, float(val or 0.01)))
-        except (ValueError, TypeError):
-            v = 0.01
-        spec_cfg = load_spectrometer_config()
-        spec_cfg.setdefault("processing", {})["wiener_regularization"] = v
-        save_spectrometer_config(spec_cfg)
-        return jsonify({"processing_wiener_regularization": v})
-    proc = _get_processing_cfg()
-    return jsonify({"processing_wiener_regularization": proc["wiener_regularization"]})
 
 
 @app.route("/api/spectrometer/processing_richardson_lucy_enabled", methods=["GET", "POST"])
@@ -328,7 +238,7 @@ def api_processing_richardson_lucy_enabled():
         spec_cfg.setdefault("processing", {})["richardson_lucy_enabled"] = enabled
         save_spectrometer_config(spec_cfg)
         return jsonify({"processing_richardson_lucy_enabled": enabled})
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     return jsonify({"processing_richardson_lucy_enabled": proc["richardson_lucy_enabled"]})
 
 
@@ -345,7 +255,7 @@ def api_processing_richardson_lucy_psf_sigma():
         spec_cfg.setdefault("processing", {})["richardson_lucy_psf_sigma"] = v
         save_spectrometer_config(spec_cfg)
         return jsonify({"processing_richardson_lucy_psf_sigma": v})
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     return jsonify({"processing_richardson_lucy_psf_sigma": proc["richardson_lucy_psf_sigma"]})
 
 
@@ -362,7 +272,7 @@ def api_processing_richardson_lucy_iterations():
         spec_cfg.setdefault("processing", {})["richardson_lucy_iterations"] = v
         save_spectrometer_config(spec_cfg)
         return jsonify({"processing_richardson_lucy_iterations": v})
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     return jsonify({"processing_richardson_lucy_iterations": proc["richardson_lucy_iterations"]})
 
 
@@ -376,7 +286,7 @@ def api_processing_richardson_lucy_psf_path():
         spec_cfg.setdefault("processing", {})["richardson_lucy_psf_path"] = path or None
         save_spectrometer_config(spec_cfg)
         return jsonify({"processing_richardson_lucy_psf_path": path or None})
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     return jsonify({"processing_richardson_lucy_psf_path": proc.get("richardson_lucy_psf_path") or ""})
 
 
@@ -394,7 +304,7 @@ def api_spectrometer_preview():
 
 @app.route("/api/spectrometer/status", methods=["GET"])
 def api_spectrometer_status():
-    proc = _get_processing_cfg()
+    proc = get_processing_cfg()
     with _spectrum_lock:
         channels = list(_last_spectra.keys())
     return jsonify({
@@ -415,20 +325,6 @@ def api_spectrometer_spectrum(channel_id):
 
 
 # --- Camera / stream API (mirrors MQTT camera control) ---
-
-
-def _load_camera_config():
-    env = _get_env()
-    path = env.get("paths", {}).get("camera_config", "/home/raspberry/camera_config.json")
-    with open(path) as f:
-        return json.load(f)
-
-
-def _save_camera_config(cfg):
-    env = _get_env()
-    path = env.get("paths", {}).get("camera_config", "/home/raspberry/camera_config.json")
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
 
 
 def _apply_exposure_gain(cfg):
@@ -457,7 +353,7 @@ def _apply_exposure_gain(cfg):
 
 @app.route("/api/camera/config", methods=["GET"])
 def api_camera_config():
-    return jsonify(_load_camera_config())
+    return jsonify(load_camera_config())
 
 
 @app.route("/api/camera/rtsp", methods=["POST"])
@@ -478,12 +374,12 @@ def api_camera_rtsp():
 
 @app.route("/api/camera/resolution", methods=["POST"])
 def api_camera_resolution():
-    cfg = _load_camera_config()
+    cfg = load_camera_config()
     data = request.get_json(silent=True) or {}
     val = data.get("value", data.get("resolution", ""))
     if val:
         cfg["resolution"] = str(val)
-        _save_camera_config(cfg)
+        save_camera_config(cfg)
         env = _get_env()
         rtsp = env.get("services", {}).get("rtsp_camera", "rtsp-camera.service")
         _systemctl("restart", rtsp)
@@ -492,14 +388,14 @@ def api_camera_resolution():
 
 @app.route("/api/camera/fps", methods=["POST"])
 def api_camera_fps():
-    cfg = _load_camera_config()
+    cfg = load_camera_config()
     data = request.get_json(silent=True) or {}
     try:
         val = int(data.get("value", data.get("fps", cfg.get("fps", 5))))
     except (ValueError, TypeError):
         val = cfg.get("fps", 5)
     cfg["fps"] = val
-    _save_camera_config(cfg)
+    save_camera_config(cfg)
     _apply_exposure_gain(cfg)
     env = _get_env()
     rtsp = env.get("services", {}).get("rtsp_camera", "rtsp-camera.service")
@@ -509,35 +405,35 @@ def api_camera_fps():
 
 @app.route("/api/camera/shutter", methods=["POST"])
 def api_camera_shutter():
-    cfg = _load_camera_config()
+    cfg = load_camera_config()
     data = request.get_json(silent=True) or {}
     try:
         val = int(data.get("value", data.get("shutter", cfg.get("shutter", 0))))
     except (ValueError, TypeError):
         val = cfg.get("shutter", 0)
     cfg["shutter"] = val
-    _save_camera_config(cfg)
+    save_camera_config(cfg)
     _apply_exposure_gain(cfg)
     return jsonify(cfg)
 
 
 @app.route("/api/camera/gain", methods=["POST"])
 def api_camera_gain():
-    cfg = _load_camera_config()
+    cfg = load_camera_config()
     data = request.get_json(silent=True) or {}
     try:
         val = float(data.get("value", data.get("gain", cfg.get("gain", 0))))
     except (ValueError, TypeError):
         val = cfg.get("gain", 0)
     cfg["gain"] = val
-    _save_camera_config(cfg)
+    save_camera_config(cfg)
     _apply_exposure_gain(cfg)
     return jsonify(cfg)
 
 
 @app.route("/api/camera/pixel_format", methods=["POST"])
 def api_camera_pixel_format():
-    cfg = _load_camera_config()
+    cfg = load_camera_config()
     data = request.get_json(silent=True) or {}
     val = str(data.get("value", data.get("pixel_format", "Y8"))).upper()
     if val in ("8", "8BIT"):
@@ -546,7 +442,7 @@ def api_camera_pixel_format():
         val = "Y10"
     if val in ("Y8", "Y10", "Y10P"):
         cfg["pixel_format"] = val
-        _save_camera_config(cfg)
+        save_camera_config(cfg)
         env = _get_env()
         rtsp = env.get("services", {}).get("rtsp_camera", "rtsp-camera.service")
         _systemctl("restart", rtsp)
@@ -579,20 +475,45 @@ network={{
 \tkey_mgmt=WPA-PSK
 }}
 '''
-            # Write to project-local file; bootstrap can copy to system path
+            # Write to project-local file; bootstrap copies at STA boot
             project_dir = Path(env.get("paths", {}).get("home", "/home/raspberry"))
             local_path = project_dir / "wifi_credentials.conf"
             local_path.write_text(content, encoding="utf-8")
+            # If in STA mode, apply immediately (copy to system path, restart wpa_supplicant)
+            _project_root = Path(__file__).resolve().parent.parent.parent
+            apply_script = _project_root / "install" / "apply_wifi_credentials.sh"
+            if not (Path("/run/spectrometer-ap-enabled").exists()) and apply_script.is_file():
+                try:
+                    subprocess.run(
+                        ["sudo", str(apply_script)],
+                        check=False,
+                        capture_output=True,
+                        timeout=10,
+                        env={**os.environ, "ENV_CONFIG": str(_project_root / "env_config.json")},
+                    )
+                except Exception:
+                    pass
             return jsonify({"status": "saved", "path": str(local_path)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-    # GET: return current config (masked)
-    return jsonify({"sta_config_path": sta_path})
+    # GET: return current SSID from wifi_credentials.conf (for form display; password never returned)
+    ssid = ""
+    project_dir = Path(env.get("paths", {}).get("home", "/home/raspberry"))
+    creds_path = project_dir / "wifi_credentials.conf"
+    if creds_path.is_file():
+        try:
+            for line in creds_path.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("ssid="):
+                    ssid = line.split("=", 1)[1].strip().strip('"')
+                    break
+        except Exception:
+            pass
+    return jsonify({"sta_config_path": sta_path, "ssid": ssid})
 
 
 @app.route("/api/config/mqtt", methods=["GET", "POST"])
 def api_config_mqtt():
-    env_path = os.environ.get("ENV_CONFIG", "/home/raspberry/env_config.json")
+    env_path = DEFAULT_ENV_CONFIG
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         try:
@@ -660,17 +581,6 @@ def api_stream_url():
         return jsonify({"hls": hls_url, "rtsp": rtsp_url})
     except Exception:
         return jsonify({"hls": "", "rtsp": rtsp_url})
-
-
-@app.route("/api/theme", methods=["GET", "POST"])
-def api_theme():
-    themes = ["light", "dark", "high-contrast", "green-military"]
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        t = data.get("theme", request.form.get("theme", "light"))
-        if t in themes:
-            return jsonify({"theme": t})
-    return jsonify({"themes": themes, "current": "light"})
 
 
 # --- Static / index ---

@@ -7,8 +7,7 @@
   "wifi": {
     "ap_ssid": "Spectrometer-AP",
     "ap_passphrase": "changeme",
-    "ap_channel": 6,
-    "sta_config_path": "/etc/wpa_supplicant/wpa_supplicant.conf"
+    "ap_channel": 6
   },
   "webserver": {
     "host": "0.0.0.0",
