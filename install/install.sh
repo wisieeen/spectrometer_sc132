@@ -279,6 +279,27 @@ sudo systemctl enable spectrometer-bootstrap.service
 echo "  spectrometer-network-recovery, spectrometer-bootstrap, spectrometer-diagnostics: installed, enabled at boot"
 echo "  NM dispatcher 90-spectrometer-ap: installed (allows incoming traffic in AP mode)"
 
+# spectrometer-apply-wifi-credentials.service (applies STA wifi_credentials.conf on boot)
+chmod +x "$PROJECT_DIR/install/apply_wifi_credentials.sh"
+sudo tee /etc/systemd/system/spectrometer-apply-wifi-credentials.service > /dev/null << EOF
+[Unit]
+Description=Spectrometer Apply WiFi Credentials (STA)
+After=NetworkManager.service network-online.target spectrometer-bootstrap.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$PROJECT_DIR/install/apply_wifi_credentials.sh
+WorkingDirectory=$PROJECT_DIR
+Environment=ENV_CONFIG=$PROJECT_DIR/env_config.json
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable spectrometer-apply-wifi-credentials.service
+echo "  spectrometer-apply-wifi-credentials.service: installed, enabled at boot"
+
 # mqtt-camera.service (conditional on MQTT GPIO)
 sudo tee /etc/systemd/system/mqtt-camera.service > /dev/null << EOF
 [Unit]

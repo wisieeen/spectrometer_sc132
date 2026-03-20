@@ -23,8 +23,9 @@ STA_PATH=$(jq -r '.wifi.sta_config_path // "/etc/wpa_supplicant/wpa_supplicant.c
 CREDS="$HOME_DIR/wifi_credentials.conf"
 
 if [ ! -f "$CREDS" ]; then
-    _log "=== WiFi save FAIL: wifi_credentials.conf not found ==="
-    exit 1
+    # On first boot there may be no credentials saved yet; treat as no-op.
+    _log "=== WiFi save SKIP: wifi_credentials.conf not found ==="
+    exit 0
 fi
 
 # Do not apply when in AP mode (would start wpa_supplicant and break AP)

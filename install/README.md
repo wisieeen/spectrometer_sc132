@@ -23,7 +23,7 @@ chmod +x install/install.sh
 2. Creates virtual environment at `$PROJECT_DIR/venv` and installs Python packages (paho-mqtt, RPi.GPIO, spectrometer requirements incl. flask)
 3. Downloads and installs mediamtx (unless `--no-mediamtx`)
 4. Downloads and installs raspberrypi_v4l2 driver (Raspberry Pi only; Pi 5 vs other auto-detected). Reboot required after first install.
-5. Creates systemd units: spectrometer-bootstrap, mqtt-camera, rtsp-camera, mediamtx, spectrometer, spectrometer-webserver
+5. Creates systemd units: spectrometer-bootstrap, spectrometer-apply-wifi-credentials (STA), mqtt-camera, rtsp-camera, mediamtx, spectrometer, spectrometer-webserver
 6. spectrometer-bootstrap runs early (reads GPIO, configures AP/STA via NetworkManager); mqtt-camera, rtsp-camera, spectrometer are conditional on GPIO flags; spectrometer is enabled at boot
 7. Adds sudoers entry for passwordless systemctl/shutdown
 
