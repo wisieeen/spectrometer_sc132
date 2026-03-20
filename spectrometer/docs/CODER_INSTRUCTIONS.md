@@ -42,8 +42,7 @@ Each technique is independent. Toggle via MQTT: `cmd/processing_frame_average_n`
 
 Reuse `paths.camera_config`, `paths.i2c_tool`, `device.video`, `device.i2c_bus`, `services.*`. Add `spectrometer.cmd_topic`, `spectrometer.state_topic`, `spectrometer.config_path` (optional). Add `gpio`, `wifi`, `webserver` for GPIO bootstrap and webserver.
 
-## Optical Path Tools (docs/)
+## Optical Path Tools
 
-- **OPTICAL_EQUATIONS.md** — Grating equation, collimation, resolution formulas.
-- **spectrometer_optical_simulator.py** — Interactive ray diagram; run from `docs/` with `python spectrometer_optical_simulator.py`. Requires matplotlib.
-- **spectrometer_ml_optimizer.py** — Geometry optimization via Bayesian (skopt) and Genetic (scipy) methods. Requires `pip install -r requirements-optical-ml.txt`. Run: `python spectrometer_ml_optimizer.py --method both`.
+- **../../helper_scripts/OPTICAL_EQUATIONS.md** - Grating equation, collimation, resolution formulas.
+- **../../helper_scripts/spectrometer_optical_simulator.py** - Interactive ray diagram. Requires matplotlib.

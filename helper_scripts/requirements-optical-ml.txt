@@ -1,5 +1,0 @@
-# Optional dependencies for spectrometer optical simulator and ML optimizer
-# Install: pip install -r requirements-optical-ml.txt
-
-scipy>=1.7.0
-scikit-optimize>=0.9.0

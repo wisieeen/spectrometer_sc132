@@ -16,7 +16,7 @@ chmod +x install/install.sh
 ./install/install.sh
 ```
 
-Options: `--no-mediamtx` (mediamtx on another host), `--no-spectrometer`, `--user=USER`. See [install/README.md](install/README.md).
+Options: `--no-mediamtx` (mediamtx on another host), `--user=USER`. Script details: [install/INSTALL_SCRIPTS.md](install/INSTALL_SCRIPTS.md).
 
 ### Manual install
 
@@ -139,6 +139,8 @@ sudo systemctl start mqtt-camera.service
 ```
 
 The RTSP stream starts only when you publish `ON` to the rtsp command topic.
+
+Note: in GPIO-controlled mode installed by `install/install.sh`, service startup is additionally gated by `/run/spectrometer-*-enabled` flags created by `spectrometer-bootstrap.service`.
 
 ## 5. Permissions
 
@@ -280,9 +282,9 @@ column_span: 2
 ```
 
 
-## 7. Spectrometer (optional)
+## 7. Spectrometer Service
 
-The spectrometer subproject captures spectra from the same camera. See [spectrometer/README.md](spectrometer/README.md), [spectrometer/docs/USER_GUIDE.md](spectrometer/docs/USER_GUIDE.md), and [spectrometer/docs/INDEX.md](spectrometer/docs/INDEX.md).
+The spectrometer module is the core purpose of this project. See [spectrometer/OVERVIEW.md](spectrometer/OVERVIEW.md), [spectrometer/docs/USER_GUIDE.md](spectrometer/docs/USER_GUIDE.md), and [spectrometer/docs/INDEX.md](spectrometer/docs/INDEX.md).
 
 **Prerequisites**: RTSP stream must be **OFF** (V4L2 device is exclusive). Stop stream before running spectrometer scripts.
 
@@ -296,6 +298,7 @@ The spectrometer subproject captures spectra from the same camera. See [spectrom
 1. Publish `ON` to `lab/monocamera/cmd/rtsp` (or your `cmd_topic` + `rtsp`)
 2. Check `sudo systemctl status rtsp-camera.service` and `mediamtx.service`
 3. Open the RTSP URL in VLC or Home Assistant
+4. Verify spectrometer topics and data flow (see [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md))
 
 ## 9. Troubleshooting
 
