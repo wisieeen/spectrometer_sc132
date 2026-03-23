@@ -9,7 +9,9 @@ import subprocess
 import sys
 import threading
 import time
+import math
 from pathlib import Path
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,7 +29,11 @@ from lib.signal_processing import (
     load_dark_flat,
     richardson_lucy_deconvolve,
 )
-from scripts.camera_capture import capture_frame, capture_frames_averaged
+from scripts.camera_capture import (
+    capture_frame,
+    capture_frames_averaged,
+    invalidate_capture_context_cache,
+)
 
 app = Flask(__name__, static_folder=_STATIC_DIR, template_folder=os.path.join(os.path.dirname(_SCRIPT_DIR), "templates"))
 
@@ -36,9 +42,90 @@ _spectrum_lock = threading.Lock()
 _last_spectra = {}  # channel_id -> spectrum dict
 _running = False
 _interval_ms = 1000
+_reload_dark_flat_on_next_cycle = True
+_dark_flat_cache = {
+    "dark": None,
+    "flat": None,
+    "dark_path": None,
+    "flat_path": None,
+    "valid": False,
+}
 
 
-def _acquire_frame(spec_cfg, dark, flat):
+def _fps_from_shutter_us(shutter_us):
+    sh = max(1, int(shutter_us))
+    return max(1, min(30, int(math.ceil(1_000_000.0 / float(sh)))))
+
+
+def _load_dark_flat_cached(proc, cache, force_reload=False):
+    """Load dark/flat using RAM cache; refresh on path change or force_reload."""
+    dark_path = proc["dark_frame_path"]
+    flat_path = proc["flat_frame_path"]
+    cache_miss = (
+        force_reload
+        or (not cache["valid"])
+        or cache["dark_path"] != dark_path
+        or cache["flat_path"] != flat_path
+    )
+    if cache_miss:
+        dark, flat = load_dark_flat(dark_path, flat_path)
+        cache["dark"] = dark
+        cache["flat"] = flat
+        cache["dark_path"] = dark_path
+        cache["flat_path"] = flat_path
+        cache["valid"] = True
+    return cache["dark"], cache["flat"], cache_miss
+
+
+def _is_timing_enabled(env):
+    """Return True when continuous-loop timing profiler is enabled."""
+    raw = os.environ.get("SPECTROMETER_TIMING_PROFILE")
+    if raw is None:
+        raw = env.get("spectrometer", {}).get("timing_profile_enabled", False)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _timing_log_path(env):
+    """Resolve CSV timing log path (prefer SD card path)."""
+    configured = env.get("spectrometer", {}).get("timing_log_path")
+    if configured:
+        return Path(str(configured))
+    return Path("/media/sdcard/spectrometer_timing.csv")
+
+
+def _append_timing_row(path, row):
+    """Append one CSV row to timing file. Fail-open on IO errors."""
+    header = [
+        "timestamp_utc",
+        "cycle_id",
+        "step",
+        "channel_id",
+        "duration_ms",
+        "interval_ms",
+        "frame_average_n",
+        "dark_flat_enabled",
+        "richardson_lucy_enabled",
+        "channels_configured",
+    ]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = (not path.exists()) or (path.stat().st_size == 0)
+        with path.open("a", encoding="utf-8", buffering=1) as f:
+            if write_header:
+                f.write(",".join(header) + "\n")
+            f.write(
+                f'{row["timestamp_utc"]},{row["cycle_id"]},{row["step"]},{row["channel_id"]},'
+                f'{row["duration_ms"]:.3f},{row["interval_ms"]},{row["frame_average_n"]},'
+                f'{row["dark_flat_enabled"]},{row["richardson_lucy_enabled"]},{row["channels_configured"]}\n'
+            )
+    except Exception:
+        # Profiling is temporary/diagnostic and must never stop acquisition.
+        pass
+
+
+def _acquire_frame(spec_cfg, dark, flat, timing_rows=None):
     """Capture one spectrometer frame and optionally apply corrections.
 
     Inputs:
@@ -53,18 +140,62 @@ def _acquire_frame(spec_cfg, dark, flat):
     """
     proc = get_processing_cfg(spec_cfg)
     n = max(1, proc["frame_average_n"])
+    t0 = time.perf_counter_ns()
     if n > 1:
-        frame = capture_frames_averaged(n)
+        frame = capture_frames_averaged(n, timing_rows=timing_rows)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_frames_averaged",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
     else:
+        t1 = time.perf_counter_ns()
         frame = capture_frame()
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_frame",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t1) / 1_000_000.0,
+                }
+            )
         import numpy as np
+        t2 = time.perf_counter_ns()
         frame = frame.astype(np.float64)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_frame.astype_float64",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t2) / 1_000_000.0,
+                }
+            )
     if proc["dark_flat_enabled"] and (dark is not None or flat is not None):
+        t3 = time.perf_counter_ns()
         frame = apply_dark_flat_frame(frame, dark, flat)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "apply_dark_flat_frame",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t3) / 1_000_000.0,
+                }
+            )
+    elif timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "apply_dark_flat_frame_skipped",
+                "channel_id": "",
+                "duration_ms": 0.0,
+            }
+        )
     return frame
 
 
-def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None):
+def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=None):
     """Extract spectra for all configured channels from a frame.
 
     Inputs:
@@ -85,6 +216,7 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None):
 
     cam_cfg = load_camera_config()
     proc = get_processing_cfg(spec_cfg)
+    timing = timing_rows
     meta = {
         "shutter_us": cam_cfg.get("shutter"),
         "gain_db": cam_cfg.get("gain"),
@@ -116,17 +248,36 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None):
         cal_id = ch.get("calibration_id", "default")
         cal = calibrations.get(cal_id)
 
+        t0 = time.perf_counter_ns()
         intensities = extract_line_profile(frame, start, end, thickness)
+        if timing is not None:
+            timing.append(
+                {
+                    "step": "extract_line_profile",
+                    "channel_id": ch.get("id", ""),
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         if len(intensities) == 0:
             continue
         proc = get_processing_cfg(spec_cfg)
         if proc["richardson_lucy_enabled"]:
+            t0 = time.perf_counter_ns()
             intensities = richardson_lucy_deconvolve(
                 intensities,
                 psf_sigma_px=proc["richardson_lucy_psf_sigma"],
                 num_iterations=proc["richardson_lucy_iterations"],
                 psf_path=proc.get("richardson_lucy_psf_path"),
             )
+            if timing is not None:
+                timing.append(
+                    {
+                        "step": "richardson_lucy_deconvolve",
+                        "channel_id": ch.get("id", ""),
+                        "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                    }
+                )
+        t0 = time.perf_counter_ns()
         if cal and "coefficients" in cal:
             coeffs = np.array(cal["coefficients"])
         elif cal and len(cal.get("pairs", [])) >= 2:
@@ -137,7 +288,24 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None):
             )
         else:
             coeffs = np.array([1.0, 0.0])
+        if timing is not None:
+            timing.append(
+                {
+                    "step": "compute_calibration_coeffs",
+                    "channel_id": ch.get("id", ""),
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
+        t0 = time.perf_counter_ns()
         wavelengths, ints = compute_spectrum(intensities, coeffs)
+        if timing is not None:
+            timing.append(
+                {
+                    "step": "compute_spectrum",
+                    "channel_id": ch.get("id", ""),
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         spectra[ch["id"]] = {
             "channel_id": ch["id"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -161,24 +329,94 @@ def _capture_loop():
         captures a frame with dark/flat correction, converts it into per-channel spectra,
         and atomically updates `_last_spectra`.
     """
-    global _running, _last_spectra
+    global _running, _last_spectra, _reload_dark_flat_on_next_cycle, _dark_flat_cache
+    env = _get_env()
+    timing_enabled = _is_timing_enabled(env)
+    timing_path = _timing_log_path(env)
+    cycle_id = 0
     while True:
+        cycle_start_ns = time.perf_counter_ns()
         if not _running:
             time.sleep(0.5)
             continue
         try:
+            timing_rows = []
+
+            t0 = time.perf_counter_ns()
             spec_cfg = load_spectrometer_config()
+            if timing_enabled:
+                timing_rows.append({"step": "load_spectrometer_config", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
+
+            t0 = time.perf_counter_ns()
             proc = get_processing_cfg(spec_cfg)
-            dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
-            frame = _acquire_frame(spec_cfg, dark, flat)
-            spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
+            if timing_enabled:
+                timing_rows.append({"step": "get_processing_cfg", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
+
+            t0 = time.perf_counter_ns()
+            dark, flat, cache_miss = _load_dark_flat_cached(
+                proc,
+                _dark_flat_cache,
+                force_reload=_reload_dark_flat_on_next_cycle,
+            )
+            _reload_dark_flat_on_next_cycle = False
+            if timing_enabled:
+                timing_rows.append({"step": "load_dark_flat", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
+                timing_rows.append({"step": "load_dark_flat_cache_miss" if cache_miss else "load_dark_flat_cache_hit", "channel_id": "", "duration_ms": 0.0})
+
+            t0 = time.perf_counter_ns()
+            frame = _acquire_frame(spec_cfg, dark, flat, timing_rows=timing_rows if timing_enabled else None)
+            if timing_enabled:
+                timing_rows.append({"step": "_acquire_frame", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
+
+            t0 = time.perf_counter_ns()
+            spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat, timing_rows=timing_rows if timing_enabled else None)
+            if timing_enabled:
+                timing_rows.append({"step": "_process_frame_total", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
+
             with _spectrum_lock:
                 _last_spectra.update(spectra)
+            if timing_enabled:
+                cycle_id += 1
+                rows_common = {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "cycle_id": cycle_id,
+                    "interval_ms": _interval_ms,
+                    "frame_average_n": proc["frame_average_n"],
+                    "dark_flat_enabled": str(proc["dark_flat_enabled"]).lower(),
+                    "richardson_lucy_enabled": str(proc["richardson_lucy_enabled"]).lower(),
+                    "channels_configured": len(spec_cfg.get("channels", [])),
+                }
+                for row in timing_rows:
+                    _append_timing_row(
+                        timing_path,
+                        {
+                            **rows_common,
+                            "step": row["step"],
+                            "channel_id": row["channel_id"],
+                            "duration_ms": row["duration_ms"],
+                        },
+                    )
         except Exception as e:
             if os.environ.get("DEBUG"):
                 print(f"spectrometer capture error: {e}", file=sys.stderr)
         interval = _interval_ms / 1000.0
         time.sleep(max(0.1, interval))
+        if timing_enabled and _running:
+            _append_timing_row(
+                timing_path,
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "cycle_id": cycle_id,
+                    "step": "cycle_total_with_sleep",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - cycle_start_ns) / 1_000_000.0,
+                    "interval_ms": _interval_ms,
+                    "frame_average_n": proc["frame_average_n"],
+                    "dark_flat_enabled": str(proc["dark_flat_enabled"]).lower(),
+                    "richardson_lucy_enabled": str(proc["richardson_lucy_enabled"]).lower(),
+                    "channels_configured": len(spec_cfg.get("channels", [])),
+                },
+            )
 
 
 def _systemctl(action, unit):
@@ -220,8 +458,10 @@ def api_spectrometer_start():
     Transformation:
         Sets `_running = True` so `_capture_loop()` begins capturing spectra.
     """
-    global _running
+    global _running, _reload_dark_flat_on_next_cycle
     _running = True
+    _reload_dark_flat_on_next_cycle = True
+    invalidate_capture_context_cache()
     return jsonify({"status": "running"})
 
 
@@ -255,11 +495,14 @@ def api_spectrometer_single():
         Captures a frame (with latest dark/flat + processing settings) and processes it
         into per-channel spectra; updates `_last_spectra`.
     """
-    global _last_spectra
+    global _last_spectra, _reload_dark_flat_on_next_cycle, _dark_flat_cache
     try:
+        _reload_dark_flat_on_next_cycle = True
+        invalidate_capture_context_cache()
         spec_cfg = load_spectrometer_config()
         proc = get_processing_cfg(spec_cfg)
-        dark, flat = load_dark_flat(proc["dark_frame_path"], proc["flat_frame_path"])
+        dark, flat, _ = _load_dark_flat_cached(proc, _dark_flat_cache, force_reload=True)
+        _reload_dark_flat_on_next_cycle = False
         frame = _acquire_frame(spec_cfg, dark, flat)
         spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
         with _spectrum_lock:
@@ -661,6 +904,7 @@ def api_camera_shutter():
     except (ValueError, TypeError):
         val = cfg.get("shutter", 0)
     cfg["shutter"] = val
+    cfg["fps"] = _fps_from_shutter_us(val if val > 0 else 1_000_000)
     save_camera_config(cfg)
     _apply_exposure_gain(cfg)
     return jsonify(cfg)

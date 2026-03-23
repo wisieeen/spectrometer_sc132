@@ -8,12 +8,33 @@ import json
 import os
 import subprocess
 import sys
+import time
 from typing import Optional
 
 import cv2
 import numpy as np
 
 from lib.env_config import load_env, load_camera_config
+
+_CAPTURE_CONTEXT_CACHE = {
+    "valid": False,
+    "key": None,
+    "context": None,
+}
+
+
+def invalidate_capture_context_cache():
+    """Invalidate cached camera capture context and force reconfigure next capture."""
+    _CAPTURE_CONTEXT_CACHE["valid"] = False
+    _CAPTURE_CONTEXT_CACHE["key"] = None
+    _CAPTURE_CONTEXT_CACHE["context"] = None
+
+
+def _derive_fps_from_shutter_us(shutter_us: int) -> int:
+    """Compute FPS from shutter using ceil(1e6/shutter), clamped to [1, 30]."""
+    sh = max(1, int(shutter_us))
+    fps = int(np.ceil(1_000_000.0 / float(sh)))
+    return max(1, min(30, fps))
 
 
 def _parse_resolution(res: str) -> tuple[int, int]:
@@ -59,19 +80,36 @@ def _get_capture_context():
     """
     env = load_env()
     cfg = load_camera_config(env)
-    _ensure_stream_stopped(env)
-    _configure_device(env, cfg)
-
     device = env.get("device", {}).get("video", "/dev/video0")
     res = cfg.get("resolution", "1080x640")
-    w, h = _parse_resolution(res)
-    bpl, stride_w = _get_stride_info(env, cfg)
     pixel_format = str(cfg.get("pixel_format", "Y8")).strip().upper()
     if pixel_format in ("GREY",):
         pixel_format = "Y8"
     if pixel_format not in ("Y8", "Y10", "Y10P"):
         pixel_format = "Y8"
-    return env, cfg, device, w, h, bpl, stride_w, pixel_format
+
+    key = (
+        device,
+        str(res),
+        str(pixel_format),
+        int(cfg.get("shutter", 0) or 0),
+        float(cfg.get("gain", 0.0) or 0.0),
+        env.get("paths", {}).get("i2c_tool", ""),
+        str(env.get("device", {}).get("i2c_bus", "10")),
+    )
+    if _CAPTURE_CONTEXT_CACHE["valid"] and _CAPTURE_CONTEXT_CACHE["key"] == key:
+        return _CAPTURE_CONTEXT_CACHE["context"]
+
+    _ensure_stream_stopped(env)
+    _configure_device(env, cfg)
+
+    w, h = _parse_resolution(res)
+    bpl, stride_w = _get_stride_info(env, cfg)
+    context = (env, cfg, device, w, h, bpl, stride_w, pixel_format)
+    _CAPTURE_CONTEXT_CACHE["valid"] = True
+    _CAPTURE_CONTEXT_CACHE["key"] = key
+    _CAPTURE_CONTEXT_CACHE["context"] = context
+    return context
 
 
 def _ensure_stream_stopped(env):
@@ -162,8 +200,8 @@ def _configure_device(env, cfg):
     i2c_dir = os.path.dirname(i2c_tool) if i2c_tool else "."
 
     w, h = _parse_resolution(cfg.get("resolution", "1080x640"))
-    fps = max(1, min(120, int(cfg.get("fps", 5))))
     shutter = max(0, int(cfg.get("shutter", 0)))
+    fps = _derive_fps_from_shutter_us(shutter if shutter > 0 else 1_000_000)
     gain = cfg.get("gain", 0.0)
     pixel_format = str(cfg.get("pixel_format", "Y8")).strip()
     v4l2_fmt = "GREY" if pixel_format in ("Y8", "GREY", "grey") else "Y10 " if pixel_format == "Y10" else "Y10P"
@@ -258,7 +296,9 @@ def _read_exact(stream, n: int) -> Optional[bytes]:
     return bytes(buf)
 
 
-def _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> np.ndarray | None:
+def _capture_raw_y8_averaged(
+    env, cfg, w, h, bpl, stride_w, num_frames: int, timing_rows: Optional[list] = None
+) -> np.ndarray | None:
     """
     Capture raw Y8 frames and return their average as float64.
 
@@ -278,6 +318,7 @@ def _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> 
     device = env.get("device", {}).get("video", "/dev/video0")
     frame_bytes = bpl * h
 
+    t_popen = time.perf_counter_ns()
     proc = subprocess.Popen(
         [
             "v4l2-ctl",
@@ -291,27 +332,86 @@ def _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> 
         stdout=subprocess.PIPE,
         bufsize=frame_bytes,
     )
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_raw_y8_averaged.popen",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_popen) / 1_000_000.0,
+            }
+        )
     try:
         accum = None
+        t_loop = time.perf_counter_ns()
+        read_exact_sum = 0.0
+        reshape_copy_sum = 0.0
+        accumulate_sum = 0.0
         for _ in range(num_frames):
+            t_read = time.perf_counter_ns()
             raw = _read_exact(proc.stdout, frame_bytes)
+            read_exact_sum += (time.perf_counter_ns() - t_read) / 1_000_000.0
             if raw is None or len(raw) < frame_bytes:
                 return None
+            t_reshape = time.perf_counter_ns()
             frame = np.frombuffer(raw, dtype=np.uint8).reshape(h, bpl)[:, :w].copy()
+            reshape_copy_sum += (time.perf_counter_ns() - t_reshape) / 1_000_000.0
+            t_acc = time.perf_counter_ns()
             if accum is None:
                 accum = np.zeros(frame.shape, dtype=np.float64)
             accum += frame
+            accumulate_sum += (time.perf_counter_ns() - t_acc) / 1_000_000.0
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y8_averaged.loop_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_loop) / 1_000_000.0,
+                }
+            )
+            timing_rows.append({"step": "capture_raw_y8_averaged.read_exact_sum", "channel_id": "", "duration_ms": read_exact_sum})
+            timing_rows.append({"step": "capture_raw_y8_averaged.reshape_copy_sum", "channel_id": "", "duration_ms": reshape_copy_sum})
+            timing_rows.append({"step": "capture_raw_y8_averaged.accumulate_sum", "channel_id": "", "duration_ms": accumulate_sum})
+        t_wait = time.perf_counter_ns()
         proc.wait(timeout=5)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y8_averaged.wait",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_wait) / 1_000_000.0,
+                }
+            )
         if accum is None:
             return None
-        return (accum / num_frames).astype(np.float64)
+        t_div = time.perf_counter_ns()
+        out = (accum / num_frames).astype(np.float64)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y8_averaged.final_divide_cast",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_div) / 1_000_000.0,
+                }
+            )
+        return out
     except (subprocess.TimeoutExpired, OSError):
+        t_kill = time.perf_counter_ns()
         proc.kill()
         proc.wait()
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y8_averaged.kill_wait",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_kill) / 1_000_000.0,
+                }
+            )
         return None
 
 
-def _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) -> np.ndarray | None:
+def _capture_raw_y10_averaged(
+    env, cfg, w, h, bpl, stride_w, num_frames: int, timing_rows: Optional[list] = None
+) -> np.ndarray | None:
     """
     Capture raw Y10 frames and return their average as float64.
 
@@ -331,6 +431,7 @@ def _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) ->
     device = env.get("device", {}).get("video", "/dev/video0")
     frame_bytes = bpl * h
 
+    t_popen = time.perf_counter_ns()
     proc = subprocess.Popen(
         [
             "v4l2-ctl",
@@ -344,24 +445,81 @@ def _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, num_frames: int) ->
         stdout=subprocess.PIPE,
         bufsize=frame_bytes,
     )
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_raw_y10_averaged.popen",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_popen) / 1_000_000.0,
+            }
+        )
     try:
         accum = None
+        t_loop = time.perf_counter_ns()
+        read_exact_sum = 0.0
+        reshape_copy_sum = 0.0
+        accumulate_sum = 0.0
         for _ in range(num_frames):
+            t_read = time.perf_counter_ns()
             raw = _read_exact(proc.stdout, frame_bytes)
+            read_exact_sum += (time.perf_counter_ns() - t_read) / 1_000_000.0
             if raw is None or len(raw) < frame_bytes:
                 return None
+            t_reshape = time.perf_counter_ns()
             frame = np.frombuffer(raw, dtype=np.uint16).reshape(h, stride_w)[:, :w].copy()
+            reshape_copy_sum += (time.perf_counter_ns() - t_reshape) / 1_000_000.0
+            t_acc = time.perf_counter_ns()
             if accum is None:
                 accum = np.zeros(frame.shape, dtype=np.float64)
             accum += frame.astype(np.float64)
+            accumulate_sum += (time.perf_counter_ns() - t_acc) / 1_000_000.0
             del frame
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y10_averaged.loop_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_loop) / 1_000_000.0,
+                }
+            )
+            timing_rows.append({"step": "capture_raw_y10_averaged.read_exact_sum", "channel_id": "", "duration_ms": read_exact_sum})
+            timing_rows.append({"step": "capture_raw_y10_averaged.reshape_copy_sum", "channel_id": "", "duration_ms": reshape_copy_sum})
+            timing_rows.append({"step": "capture_raw_y10_averaged.accumulate_sum", "channel_id": "", "duration_ms": accumulate_sum})
+        t_wait = time.perf_counter_ns()
         proc.wait(timeout=5)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y10_averaged.wait",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_wait) / 1_000_000.0,
+                }
+            )
         if accum is None:
             return None
-        return (accum / num_frames).astype(np.float64)
+        t_div = time.perf_counter_ns()
+        out = (accum / num_frames).astype(np.float64)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y10_averaged.final_divide_cast",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_div) / 1_000_000.0,
+                }
+            )
+        return out
     except (subprocess.TimeoutExpired, OSError):
+        t_kill = time.perf_counter_ns()
         proc.kill()
         proc.wait()
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_raw_y10_averaged.kill_wait",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_kill) / 1_000_000.0,
+                }
+            )
         return None
 
 
@@ -595,7 +753,7 @@ def capture_frames(n: int) -> list:
     return frames
 
 
-def capture_frames_averaged(n: int) -> np.ndarray:
+def capture_frames_averaged(n: int, timing_rows: Optional[list] = None) -> np.ndarray:
     """
     Capture `n` consecutive frames and return their average as a float64 frame.
 
@@ -610,52 +768,147 @@ def capture_frames_averaged(n: int) -> np.ndarray:
     if n <= 0:
         raise ValueError("n must be >= 1")
     if n == 1:
+        t0 = time.perf_counter_ns()
         frame = capture_frame(1)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_frames_averaged.n1_capture_frame",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         return frame.astype(np.float64)
 
+    t_ctx = time.perf_counter_ns()
     env, cfg, device, w, h, bpl, stride_w, pixel_format = _get_capture_context()
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_frames_averaged.context_setup",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_ctx) / 1_000_000.0,
+            }
+        )
 
     if pixel_format == "Y10" and stride_w > 0:
-        frame = _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, n)
+        t_raw = time.perf_counter_ns()
+        frame = _capture_raw_y10_averaged(env, cfg, w, h, bpl, stride_w, n, timing_rows=timing_rows)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_frames_averaged.raw_y10_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_raw) / 1_000_000.0,
+                }
+            )
         if frame is not None:
             return frame
         print("Raw Y10 capture failed; cannot fall back to OpenCV (Y10 unsupported)", file=sys.stderr)
         sys.exit(1)
 
     if pixel_format in ("Y8", "GREY", "grey") and stride_w > 0 and stride_w != w:
-        frame = _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, n)
+        t_raw = time.perf_counter_ns()
+        frame = _capture_raw_y8_averaged(env, cfg, w, h, bpl, stride_w, n, timing_rows=timing_rows)
+        if timing_rows is not None:
+            timing_rows.append(
+                {
+                    "step": "capture_frames_averaged.raw_y8_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t_raw) / 1_000_000.0,
+                }
+            )
         if frame is not None:
             return frame
 
+    t_open = time.perf_counter_ns()
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_frames_averaged.cv2_open",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_open) / 1_000_000.0,
+            }
+        )
     if not cap.isOpened():
         print("Failed to open video device", file=sys.stderr)
         sys.exit(1)
 
+    t_set = time.perf_counter_ns()
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_frames_averaged.cv2_set_props",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_set) / 1_000_000.0,
+            }
+        )
 
     accum = None
     count = 0
+    t_read_all = time.perf_counter_ns()
+    read_ms_sum = 0.0
+    prep_ms_sum = 0.0
+    accum_ms_sum = 0.0
     for _ in range(n):
+        t_read = time.perf_counter_ns()
         ret, frame = cap.read()
+        read_ms_sum += (time.perf_counter_ns() - t_read) / 1_000_000.0
         if not ret:
             break
+        t_prep = time.perf_counter_ns()
         if stride_w > 0 and stride_w != w and frame.shape[1] >= w:
             frame = frame[:, :w].copy()
         if len(frame.shape) == 3:
             frame = frame[:, :, 0] if frame.shape[2] == 1 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        prep_ms_sum += (time.perf_counter_ns() - t_prep) / 1_000_000.0
+        t_acc = time.perf_counter_ns()
         if accum is None:
             accum = np.zeros(frame.shape, dtype=np.float64)
         accum += frame.astype(np.float64)
+        accum_ms_sum += (time.perf_counter_ns() - t_acc) / 1_000_000.0
         count += 1
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_frames_averaged.cv2_read_all",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_read_all) / 1_000_000.0,
+            }
+        )
+        timing_rows.append({"step": "capture_frames_averaged.cv2_read_sum", "channel_id": "", "duration_ms": read_ms_sum})
+        timing_rows.append({"step": "capture_frames_averaged.cv2_prepare_sum", "channel_id": "", "duration_ms": prep_ms_sum})
+        timing_rows.append({"step": "capture_frames_averaged.cv2_accumulate_sum", "channel_id": "", "duration_ms": accum_ms_sum})
+        timing_rows.append({"step": "capture_frames_averaged.frames_captured", "channel_id": "", "duration_ms": float(count)})
+    t_rel = time.perf_counter_ns()
     cap.release()
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_frames_averaged.cv2_release",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_rel) / 1_000_000.0,
+            }
+        )
 
     if count < n:
         print("Failed to read all frames", file=sys.stderr)
         sys.exit(1)
 
-    return (accum / count).astype(np.float64)
+    t_div = time.perf_counter_ns()
+    out = (accum / count).astype(np.float64)
+    if timing_rows is not None:
+        timing_rows.append(
+            {
+                "step": "capture_frames_averaged.final_divide_cast",
+                "channel_id": "",
+                "duration_ms": (time.perf_counter_ns() - t_div) / 1_000_000.0,
+            }
+        )
+    return out
 
 
 if __name__ == "__main__":

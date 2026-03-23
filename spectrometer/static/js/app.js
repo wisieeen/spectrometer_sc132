@@ -393,7 +393,7 @@
   }
 
   // --- Poll spectrum ---
-  const POLL_INTERVAL_RUNNING = 2000;
+  const POLL_INTERVAL_RUNNING = 250;
   const POLL_INTERVAL_IDLE = 10000;
   let pollTimeoutId = null;
 
