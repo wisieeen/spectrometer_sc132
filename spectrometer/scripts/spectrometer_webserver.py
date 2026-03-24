@@ -52,6 +52,48 @@ _dark_flat_cache = {
 }
 
 
+def _capture_calibration_frame(mode):
+    """Capture and save dark/flat calibration frame using current config paths.
+
+    Inputs:
+        mode: "dark" or "flat".
+    Output:
+        Tuple (payload_dict, status_code).
+    Transformation:
+        Uses `processing.dark_frame_path` / `processing.flat_frame_path` from config,
+        captures averaged frames, saves `.npy`, and marks dark/flat cache for reload.
+    """
+    global _reload_dark_flat_on_next_cycle
+    if mode not in ("dark", "flat"):
+        return {"error": "mode must be 'dark' or 'flat'"}, 400
+    if _running:
+        return {"error": "stop continuous acquisition before collecting calibration frame"}, 409
+
+    spec_cfg = load_spectrometer_config()
+    proc = get_processing_cfg(spec_cfg)
+    output_path = proc["dark_frame_path"] if mode == "dark" else proc["flat_frame_path"]
+    n = max(2, int(proc.get("frame_average_n", 1)))
+
+    try:
+        invalidate_capture_context_cache()
+        frame = capture_frames_averaged(n)
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        import numpy as np
+
+        np.save(str(out), frame)
+        _reload_dark_flat_on_next_cycle = True
+        return {
+            "status": "saved",
+            "mode": mode,
+            "path": str(out),
+            "frames_averaged": n,
+            "shape": list(frame.shape),
+        }, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
 def _fps_from_shutter_us(shutter_us):
     sh = max(1, int(shutter_us))
     return max(1, min(30, int(math.ceil(1_000_000.0 / float(sh)))))
@@ -215,6 +257,10 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
     from datetime import datetime, timezone
 
     cam_cfg = load_camera_config()
+    pixel_format = str(cam_cfg.get("pixel_format", "Y8")).strip().upper()
+    if pixel_format in ("GREY",):
+        pixel_format = "Y8"
+    max_value = 255.0 if pixel_format == "Y8" else 1023.0 if pixel_format in ("Y10", "Y10P") else None
     proc = get_processing_cfg(spec_cfg)
     timing = timing_rows
     meta = {
@@ -249,7 +295,20 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
         cal = calibrations.get(cal_id)
 
         t0 = time.perf_counter_ns()
-        intensities = extract_line_profile(frame, start, end, thickness)
+        line_result = extract_line_profile(
+            frame,
+            start,
+            end,
+            thickness,
+            max_value=max_value,
+            overexposure_margin=5,
+            return_overexposed=bool(spec_cfg.get("_single_capture_overexposure_check", False)),
+        )
+        if isinstance(line_result, tuple):
+            intensities, overexposed = line_result
+        else:
+            intensities = line_result
+            overexposed = None
         if timing is not None:
             timing.append(
                 {
@@ -306,12 +365,20 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
                     "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
                 }
             )
+        channel_meta = dict(meta)
+        if overexposed is not None:
+            channel_meta["overexposure"] = {
+                "checked": True,
+                "overexposed": bool(overexposed),
+                "threshold": (max_value - 5.0) if max_value is not None else None,
+                "max_value": max_value,
+            }
         spectra[ch["id"]] = {
             "channel_id": ch["id"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "wavelengths_nm": wavelengths.tolist(),
             "intensities": ints.tolist(),
-            "meta": meta,
+            "meta": channel_meta,
         }
     return spectra
 
@@ -504,6 +571,8 @@ def api_spectrometer_single():
         dark, flat, _ = _load_dark_flat_cached(proc, _dark_flat_cache, force_reload=True)
         _reload_dark_flat_on_next_cycle = False
         frame = _acquire_frame(spec_cfg, dark, flat)
+        spec_cfg = dict(spec_cfg)
+        spec_cfg["_single_capture_overexposure_check"] = True
         spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
         with _spectrum_lock:
             _last_spectra.update(spectra)
@@ -711,6 +780,20 @@ def api_spectrometer_preview():
         env=os.environ,
     )
     return jsonify({"status": "preview started"})
+
+
+@app.route("/api/spectrometer/capture_dark_frame", methods=["POST"])
+def api_capture_dark_frame():
+    """HTTP endpoint: capture and save dark-frame calibration data."""
+    payload, status = _capture_calibration_frame("dark")
+    return jsonify(payload), status
+
+
+@app.route("/api/spectrometer/capture_flat_frame", methods=["POST"])
+def api_capture_flat_frame():
+    """HTTP endpoint: capture and save flat-frame calibration data."""
+    payload, status = _capture_calibration_frame("flat")
+    return jsonify(payload), status
 
 
 @app.route("/api/spectrometer/status", methods=["GET"])

@@ -302,7 +302,12 @@
         spectrumData = s;
         lastSpectrumUpdateTime = Date.now();
         drawSpectrum();
-        showStatus('Single spectrum acquired.');
+        const over = s.meta && s.meta.overexposure;
+        if (over && over.checked && over.overexposed) {
+          showStatus('Single spectrum acquired. Warning: overexposure detected on line of interest.', true);
+        } else {
+          showStatus('Single spectrum acquired.');
+        }
       } else {
         showStatus('No spectrum data returned.', true);
       }
@@ -508,6 +513,30 @@
     const pass = document.getElementById('mqttPass').value;
     await api('POST', '/config/mqtt', { broker, port, user, pass });
     alert('MQTT config saved.');
+  });
+
+  document.getElementById('btnCaptureDarkFrame')?.addEventListener('click', async () => {
+    if (!confirm('Capture dark frame now? Ensure light path is blocked.')) return;
+    try {
+      const r = await api('POST', '/spectrometer/capture_dark_frame');
+      showStatus('Dark frame saved: ' + (r.path || 'ok'));
+      alert('Dark frame saved: ' + (r.path || 'ok'));
+    } catch (e) {
+      showStatus('Dark frame capture failed: ' + (e.message || 'Unknown error'), true);
+      alert('Dark frame capture failed: ' + (e.message || 'Unknown error'));
+    }
+  });
+
+  document.getElementById('btnCaptureFlatFrame')?.addEventListener('click', async () => {
+    if (!confirm('Capture flat frame now? Ensure uniform illumination with no saturation.')) return;
+    try {
+      const r = await api('POST', '/spectrometer/capture_flat_frame');
+      showStatus('Flat frame saved: ' + (r.path || 'ok'));
+      alert('Flat frame saved: ' + (r.path || 'ok'));
+    } catch (e) {
+      showStatus('Flat frame capture failed: ' + (e.message || 'Unknown error'), true);
+      alert('Flat frame capture failed: ' + (e.message || 'Unknown error'));
+    }
   });
 
   document.getElementById('btnReboot')?.addEventListener('click', async () => {

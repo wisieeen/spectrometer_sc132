@@ -12,11 +12,17 @@ def extract_line_profile(
     start: Tuple[int, int],
     end: Tuple[int, int],
     thickness: int,
-) -> np.ndarray:
+    max_value: Optional[float] = None,
+    overexposure_margin: int = 5,
+    return_overexposed: bool = False,
+) -> np.ndarray | Tuple[np.ndarray, bool]:
     """
     Extract intensity profile along line from start to end.
     For each point along the line, sum pixels in a strip of `thickness` perpendicular to the line.
-    Returns 1D array of intensities (length = number of pixels along line).
+    Returns:
+    - 1D array of intensities (length = number of pixels along line), or
+    - (intensities, overexposed) when return_overexposed=True.
+      overexposed=True when any sampled pixel value >= (max_value - overexposure_margin).
     """
     if not isinstance(frame, np.ndarray) or frame.size == 0:
         return np.array([])
@@ -44,6 +50,10 @@ def extract_line_profile(
     h, w = frame.shape
     half_t = thickness // 2
     intensities = []
+    overexposed = False
+    threshold = None
+    if max_value is not None:
+        threshold = float(max_value) - float(overexposure_margin)
 
     for i in range(length):
         cx = x1 + i * dx
@@ -53,10 +63,16 @@ def extract_line_profile(
             sx = int(cx + j * px)
             sy = int(cy + j * py)
             if 0 <= sx < w and 0 <= sy < h:
-                strip_values.append(frame[sy, sx])
+                v = frame[sy, sx]
+                strip_values.append(v)
+                if threshold is not None and not overexposed and float(v) >= threshold:
+                    overexposed = True
         intensities.append(float(np.mean(strip_values)) if strip_values else 0.0)
 
-    return np.array(intensities, dtype=np.float64)
+    profile = np.array(intensities, dtype=np.float64)
+    if return_overexposed:
+        return profile, overexposed
+    return profile
 
 
 def fit_calibration(
