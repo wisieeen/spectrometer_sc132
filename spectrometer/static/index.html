@@ -22,7 +22,6 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="spectrometer">Spectrometer</button>
-    <button class="tab" data-tab="video">Video stream</button>
     <button class="tab" data-tab="config">Configuration</button>
   </nav>
 
@@ -79,43 +78,6 @@
           <div class="control-row">
             <button id="btnAddVirtualChannel">Add virtual channel</button>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="tab-video" class="tab-panel">
-      <div class="video-area">
-        <video id="videoStream" controls playsinline></video>
-        <button id="btnFullscreen" class="fullscreen-btn" title="Fullscreen">&#x26F6;</button>
-      </div>
-      <div class="controls video-controls">
-        <div class="control-row">
-          <button id="btnRtspOn">Start stream</button>
-          <button id="btnRtspOff">Stop stream</button>
-        </div>
-        <div class="control-row">
-          <label>Resolution:</label>
-          <input type="text" id="resolution" placeholder="1080x640">
-        </div>
-        <div class="control-row">
-          <label>FPS:</label>
-          <input type="number" id="fps" min="1" max="60" value="5">
-        </div>
-        <div class="control-row">
-          <label>Shutter (µs):</label>
-          <input type="number" id="shutter" min="0" value="4100">
-        </div>
-        <div class="control-row">
-          <label>Gain (dB):</label>
-          <input type="number" id="gain" step="0.1" value="1">
-        </div>
-        <div class="control-row">
-          <label>Pixel format:</label>
-          <select id="pixelFormat">
-            <option value="Y8">Y8 (8-bit)</option>
-            <option value="Y10">Y10 (10-bit)</option>
-            <option value="Y10P">Y10P</option>
-          </select>
         </div>
       </div>
     </section>
@@ -187,7 +149,6 @@
     </section>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

@@ -332,7 +332,7 @@
 
   canvas?.addEventListener('mousemove', (e) => drawCursorLine(e.clientX));
   canvas?.addEventListener('mouseleave', () => {
-    cursorLabel.style.opacity = '0';
+    if (cursorLabel) cursorLabel.style.opacity = '0';
     drawSpectrum();
   });
   canvas?.addEventListener('touchmove', (e) => {
@@ -549,11 +549,11 @@
       return { type: 'const', value: n };
     }
     if (a.type === 'series' && b.type === 'const') {
-      return { type: 'series', value: mapSeriesConst(a.value, b.value, op, false) };
+      return { type: 'series', value: mapSeriesConst(a.value, b.value, op) };
     }
     if (a.type === 'const' && b.type === 'series') {
       if (op !== '*') throw new Error('Only multiplication supports constant on left side');
-      return { type: 'series', value: mapSeriesConst(b.value, a.value, op, false) };
+      return { type: 'series', value: mapSeriesConst(b.value, a.value, op) };
     }
     return { type: 'series', value: mapSeriesSeries(a.value, b.value, op) };
   }
@@ -795,10 +795,18 @@
         drawSpectrum();
       }
 
-      document.getElementById('intervalMs').value = st.interval_ms || 1000;
-      document.getElementById('frameAverageN').value = st.processing?.frame_average_n ?? 1;
-      document.getElementById('darkFlatEnabled').checked = st.processing?.dark_flat_enabled ?? false;
-      document.getElementById('richardsonLucyEnabled').checked = st.processing?.richardson_lucy_enabled ?? false;
+      const setInputValue = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+      };
+      const setInputChecked = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = value;
+      };
+      setInputValue('intervalMs', st.interval_ms || 1000);
+      setInputValue('frameAverageN', st.processing?.frame_average_n ?? 1);
+      setInputChecked('darkFlatEnabled', st.processing?.dark_flat_enabled ?? false);
+      setInputChecked('richardsonLucyEnabled', st.processing?.richardson_lucy_enabled ?? false);
       const psfSigmaEl = document.getElementById('richardsonLucyPsfSigma');
       const rlIterationsEl = document.getElementById('richardsonLucyIterations');
       const rlPathEl = document.getElementById('richardsonLucyPsfPath');
@@ -818,58 +826,6 @@
   setInterval(() => {
     updateSpectrumTimer();
   }, 1000);
-
-  // --- Video ---
-  const video = document.getElementById('videoStream');
-  document.getElementById('btnFullscreen')?.addEventListener('click', () => {
-    if (video.requestFullscreen) video.requestFullscreen();
-    else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-  });
-
-  async function loadStream() {
-    const u = await api('GET', '/stream/url');
-    const cam = await api('GET', '/camera/config');
-    document.getElementById('resolution').value = cam.resolution || '1080x640';
-    document.getElementById('fps').value = cam.fps || 5;
-    document.getElementById('shutter').value = cam.shutter || 4100;
-    document.getElementById('gain').value = cam.gain ?? 1;
-    document.getElementById('pixelFormat').value = cam.pixel_format || 'Y10';
-    if (u.hls && video) {
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = u.hls + '/index.m3u8';
-      } else {
-        if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-          new Hls().loadSource(u.hls + '/index.m3u8').attachMedia(video);
-        } else {
-          video.src = u.hls;
-        }
-      }
-    }
-  }
-
-  document.getElementById('btnRtspOn')?.addEventListener('click', async () => {
-    await api('POST', '/camera/rtsp', { action: 'on' });
-    loadStream();
-  });
-  document.getElementById('btnRtspOff')?.addEventListener('click', () => api('POST', '/camera/rtsp', { action: 'off' }));
-
-  document.getElementById('resolution')?.addEventListener('change', (e) => {
-    api('POST', '/camera/resolution', { value: e.target.value });
-  });
-  document.getElementById('fps')?.addEventListener('change', (e) => {
-    api('POST', '/camera/fps', { value: e.target.value });
-  });
-  document.getElementById('shutter')?.addEventListener('change', (e) => {
-    api('POST', '/camera/shutter', { value: e.target.value });
-  });
-  document.getElementById('gain')?.addEventListener('change', (e) => {
-    api('POST', '/camera/gain', { value: e.target.value });
-  });
-  document.getElementById('pixelFormat')?.addEventListener('change', (e) => {
-    api('POST', '/camera/pixel_format', { value: e.target.value });
-  });
-
-  document.querySelector('[data-tab="video"]')?.addEventListener('click', loadStream);
 
   // --- Config ---
   document.getElementById('btnWifiSave')?.addEventListener('click', async () => {
@@ -933,12 +889,22 @@
   });
 
   (async () => {
-    const mqtt = await api('GET', '/config/mqtt');
-    document.getElementById('mqttBroker').value = mqtt.broker || '';
-    document.getElementById('mqttPort').value = mqtt.port || 1883;
-    document.getElementById('mqttUser').value = mqtt.user || '';
-    const wifi = await api('GET', '/config/wifi');
-    if (wifi.ssid) document.getElementById('wifiSsid').value = wifi.ssid;
+    try {
+      const [mqtt, wifi] = await Promise.all([
+        api('GET', '/config/mqtt'),
+        api('GET', '/config/wifi'),
+      ]);
+      const brokerEl = document.getElementById('mqttBroker');
+      const portEl = document.getElementById('mqttPort');
+      const userEl = document.getElementById('mqttUser');
+      const ssidEl = document.getElementById('wifiSsid');
+      if (brokerEl) brokerEl.value = mqtt.broker || '';
+      if (portEl) portEl.value = mqtt.port || 1883;
+      if (userEl) userEl.value = mqtt.user || '';
+      if (ssidEl && wifi.ssid) ssidEl.value = wifi.ssid;
+    } catch (e) {
+      showStatus('Initial config load failed: ' + (e.message || 'Unknown error'), true);
+    }
   })();
 
   // --- Init ---

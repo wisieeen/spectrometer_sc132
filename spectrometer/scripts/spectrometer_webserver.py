@@ -254,7 +254,6 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
         (coefficients or fitted pairs), computes the final spectrum, and aggregates results.
     """
     import numpy as np
-    from datetime import datetime, timezone
 
     cam_cfg = load_camera_config()
     pixel_format = str(cam_cfg.get("pixel_format", "Y8")).strip().upper()
@@ -319,7 +318,6 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
             )
         if len(intensities) == 0:
             continue
-        proc = get_processing_cfg(spec_cfg)
         if proc["richardson_lucy_enabled"]:
             t0 = time.perf_counter_ns()
             intensities = richardson_lucy_deconvolve(
@@ -1210,32 +1208,6 @@ def api_system_shutdown():
         return jsonify({"status": "shutting down"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/stream/url", methods=["GET"])
-def api_stream_url():
-    """HTTP endpoint: compute and return stream URLs (HLS + RTSP).
-
-    Inputs:
-        GET: none.
-    Output:
-        JSON {"hls": "<http URL>", "rtsp": "<rtsp URL>"}.
-    Transformation:
-        Reads `env["rtsp"]["url"]`, then derives an HLS URL by swapping the port to 8888
-        and using the stream path.
-    """
-    env = _get_env()
-    rtsp_url = env.get("rtsp", {}).get("url", "rtsp://localhost:8554/mystream")
-    # Derive HLS URL: rtsp://host:8554/path -> http://host:8888/path
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(rtsp_url)
-        host = p.hostname or "localhost"
-        path = (p.path or "/mystream").strip("/") or "mystream"
-        hls_url = f"http://{host}:8888/{path}"
-        return jsonify({"hls": hls_url, "rtsp": rtsp_url})
-    except Exception:
-        return jsonify({"hls": "", "rtsp": rtsp_url})
 
 
 # --- Static / index ---
