@@ -272,6 +272,32 @@ button:disabled:hover {
   margin-bottom: 1rem;
 }
 
+.channels-section {
+  width: 100%;
+}
+
+.channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.channel-label {
+  min-width: 170px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.channel-color-box {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
 @media (max-width: 600px) {
   .controls {
     flex-direction: column;
