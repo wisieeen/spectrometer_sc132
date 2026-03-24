@@ -8,6 +8,7 @@ import os
 import sys
 
 import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,8 +18,21 @@ PREVIEW_OUTPUT = os.environ.get("SPECTROMETER_PREVIEW_OUTPUT", "/tmp/spectromete
 
 
 def main():
+    """Capture a single preview frame and save it for line-placement UI.
+
+    Inputs:
+        None (uses `capture_frame()` and `SPECTROMETER_PREVIEW_OUTPUT` env var).
+    Output:
+        Writes a PNG image to the preview output path and prints instructions.
+    Transformation:
+        Captures one frame with RTSP stopped, converts uint16->uint8 for correct PNG display
+        when using Y10 raw capture, then writes the image to disk.
+    """
     # Capture single frame (stream must be off)
     frame = capture_frame()
+    # Y10 raw returns uint16 (0-1023); PNG expects 8-bit (0-255) for correct display
+    if frame.dtype == np.uint16:
+        frame = (frame.astype(np.float32) * 255 / 1023).clip(0, 255).astype(np.uint8)
     out_path = PREVIEW_OUTPUT
     cv2.imwrite(out_path, frame)
     print(f"Preview saved to {out_path}. Use this to define line coordinates.")

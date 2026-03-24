@@ -27,6 +27,10 @@ mqtt:
     - name: "Lab Mono Camera Shutdown"
       command_topic: "lab/monocamera/cmd/shutdown"
       payload_press: "ON"
+
+    - name: "Lab Mono Camera Reboot"
+      command_topic: "lab/monocamera/cmd/reboot"
+      payload_press: "ON"
       
     - name: "Spectrometer Single Shot"
       unique_id: spectrometer_single

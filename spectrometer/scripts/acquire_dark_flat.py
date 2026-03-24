@@ -20,6 +20,19 @@ from scripts.camera_capture import capture_frames_averaged
 
 
 def main():
+    """CLI entrypoint: acquire and save an averaged dark/flat frame.
+
+    Inputs:
+        Command-line args: `sys.argv[1]` is `"dark"` or `"flat"`, `sys.argv[2]` is number of frames to average,
+        and `sys.argv[3]` is the output `.npy` path.
+    Output:
+        None (writes the averaged frame to `out_path` using `np.save` and exits).
+    Transformation:
+        - Validates CLI arguments.
+        - Prompts the user to block light or illuminate uniformly.
+        - Captures `n` frames, averages them via `capture_frames_averaged(n)`.
+        - Saves the averaged frame array to disk.
+    """
     if len(sys.argv) != 4:
         print("Usage: acquire_dark_flat.py (dark|flat) num_frames output_path", file=sys.stderr)
         sys.exit(1)

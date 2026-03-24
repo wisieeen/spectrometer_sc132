@@ -1,0 +1,7 @@
+{
+  "resolution": "1080x640",
+  "fps": 20,
+  "shutter": 43000,
+  "gain": 4.0,
+  "pixel_format": "Y10"
+}
