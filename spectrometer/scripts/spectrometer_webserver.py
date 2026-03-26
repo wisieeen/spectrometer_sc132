@@ -564,18 +564,62 @@ def api_spectrometer_single():
     """
     global _last_spectra, _reload_dark_flat_on_next_cycle, _dark_flat_cache
     try:
+        env = _get_env()
+        timing_enabled = _is_timing_enabled(env)
+        timing_path = _timing_log_path(env)
+        timing_rows = [] if timing_enabled else None
+
         _reload_dark_flat_on_next_cycle = True
         invalidate_capture_context_cache()
         spec_cfg = load_spectrometer_config()
         proc = get_processing_cfg(spec_cfg)
         dark, flat, _ = _load_dark_flat_cached(proc, _dark_flat_cache, force_reload=True)
         _reload_dark_flat_on_next_cycle = False
-        frame = _acquire_frame(spec_cfg, dark, flat)
+        t0 = time.perf_counter_ns()
+        frame = _acquire_frame(spec_cfg, dark, flat, timing_rows=timing_rows)
+        if timing_enabled:
+            timing_rows.append(
+                {
+                    "step": "_single_acquire_frame_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         spec_cfg = dict(spec_cfg)
         spec_cfg["_single_capture_overexposure_check"] = True
-        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
+        t0 = time.perf_counter_ns()
+        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat, timing_rows=timing_rows)
+        if timing_enabled:
+            timing_rows.append(
+                {
+                    "step": "_single_process_frame_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         with _spectrum_lock:
             _last_spectra = spectra
+        if timing_enabled:
+            cycle_id = int(time.time() * 1000)
+            rows_common = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "cycle_id": cycle_id,
+                "interval_ms": _interval_ms,
+                "frame_average_n": proc["frame_average_n"],
+                "dark_flat_enabled": str(proc["dark_flat_enabled"]).lower(),
+                "richardson_lucy_enabled": str(proc["richardson_lucy_enabled"]).lower(),
+                "channels_configured": len(spec_cfg.get("channels", [])),
+            }
+            for row in timing_rows:
+                _append_timing_row(
+                    timing_path,
+                    {
+                        **rows_common,
+                        "step": row["step"],
+                        "channel_id": row["channel_id"],
+                        "duration_ms": row["duration_ms"],
+                    },
+                )
         ch = next(iter(spectra.keys()), None)
         return jsonify(spectra.get(ch, {"status": "no channels"}))
     except Exception as e:
