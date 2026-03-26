@@ -22,8 +22,15 @@ def _get_spectrometer_config_path():
 
 def load_spectrometer_config(path=None):
     path = path or _get_spectrometer_config_path()
-    with open(path) as f:
-        cfg = json.load(f)
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(
+            f"{e.msg} (file: {path})",
+            e.doc,
+            e.pos,
+        ) from e
     if not isinstance(cfg, dict):
         cfg = {}
     cfg.setdefault("channels", [])

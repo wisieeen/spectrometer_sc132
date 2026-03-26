@@ -2,7 +2,7 @@
 
 ## 1. Prerequisites
 
-- Raspberry Pi OS (tested on Trixie). See [VERSIONS.md](VERSIONS.md) for dependency versions.
+- Raspberry Pi OS (tested on Trixie). See `../VERSIONS.md` for dependency versions.
 - VEYE MIPI camera with `raspberrypi_v4l2` kernel module and tools
 - MQTT broker (e.g. Mosquitto on another machine)
 - [mediamtx](https://github.com/bluenviron/mediamtx) for RTSP
@@ -16,7 +16,7 @@ chmod +x install/install.sh
 ./install/install.sh
 ```
 
-Options: `--no-mediamtx` (mediamtx on another host), `--user=USER`. Script details: [install/INSTALL_SCRIPTS.md](install/INSTALL_SCRIPTS.md).
+Options: `--no-mediamtx` (mediamtx on another host), `--user=USER`. Script details: `../install/INSTALL_SCRIPTS.md`.
 
 ### Manual install
 
@@ -284,23 +284,28 @@ column_span: 2
 
 ## 7. Spectrometer Service
 
-The spectrometer module is the core purpose of this project. See [spectrometer/OVERVIEW.md](spectrometer/OVERVIEW.md), [spectrometer/docs/USER_GUIDE.md](spectrometer/docs/USER_GUIDE.md), and [spectrometer/docs/INDEX.md](spectrometer/docs/INDEX.md).
+The spectrometer module is the core purpose of this project. See:
+
+- `OVERVIEW.md` (module entrypoints and data flow)
+- `USER_GUIDE.md` (operator workflow)
+- `MQTT_TOPICS.md` (topic map)
+- `AGENT_FRONTEND.md` (integration contract)
 
 **Prerequisites**: RTSP stream must be **OFF** (V4L2 device is exclusive). Stop stream before running spectrometer scripts.
 
 1. Install spectrometer Python deps: run `install/install.sh` (creates venv and installs deps), or manually: `venv/bin/pip install -r spectrometer/requirements.txt`
 2. Add `spectrometer` section to `env_config.json` (see `env_config.example.json`)
 3. Run `venv/bin/python spectrometer/scripts/spectrometer_service.py` (or add systemd unit via install.sh)
-4. Home Assistant integration: see [spectrometer/docs/homeassistant_spectrometer.yaml](spectrometer/docs/homeassistant_spectrometer.yaml)
+4. Home Assistant integration: see `homeassistant_spectrometer.yaml`
 
 ## 8. Verify
 
 1. Publish `ON` to `lab/monocamera/cmd/rtsp` (or your `cmd_topic` + `rtsp`)
 2. Check `sudo systemctl status rtsp-camera.service` and `mediamtx.service`
 3. Open the RTSP URL in VLC or Home Assistant
-4. Verify spectrometer topics and data flow (see [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md))
+4. Verify spectrometer topics and data flow (see `MQTT_TOPICS.md`)
 
 ## 9. Troubleshooting
 
-- **Exposure/gain not changing** (MQTT works, `camera_config.json` updates, but image unchanged): See [docs/TROUBLESHOOTING_EXPOSURE_GAIN.md](docs/TROUBLESHOOTING_EXPOSURE_GAIN.md).
-- **Webserver: video stream or continuous spectrum won't activate**: See [docs/TROUBLESHOOTING_WEBSERVER_STREAM_SPECTRUM.md](docs/TROUBLESHOOTING_WEBSERVER_STREAM_SPECTRUM.md).
+- **“Device busy” / “Failed to open video device”**: ensure RTSP streaming is stopped before running spectrometer scripts/services.
+- **Broken links**: the canonical entry points are the repo `README.md` and the docs listed in section 7 above.

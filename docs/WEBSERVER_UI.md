@@ -1,15 +1,25 @@
 # Webserver Interface Layout
 
+## Screenshots
+
+### Spectrometer tab
+
+![Spectrometer tab UI](assets/spectrometer-spectrometer.PNG)
+
+### Configuration tab
+
+![Configuration tab UI](assets/spectrometer-configuration.PNG)
+
 ## Tabs
 
 1. **Spectrometer** – spectrum chart + controls
-2. **Video stream** – stream display + camera controls
-3. **Configuration** – WiFi, MQTT broker
+2. **Configuration** – WiFi, MQTT broker
 
 ## Spectrometer Tab
 
 - **Top**: Spectrum chart (X = wavelength nm, Y = intensity)
-- **Bottom**: Parameter controls (start/stop/single, interval, frame average, dark/flat, Richardson–Lucy, preview)
+- **Middle**: Parameter controls (start/stop/single, interval, frame average, dark/flat, Richardson–Lucy)
+- **Bottom**: Channel configuration (description for CSV, active, displayed on plot and cursor, saved in CSV) 
 
 **Spectrum chart**:
 - Local maxima: wavelength label above each peak, rotated 75°
@@ -17,15 +27,10 @@
 - Interactive cursor: vertical line follows mouse/touch; shows wavelength and intensity
 - Touch support
 
-## Video Stream Tab
-
-- **Top**: Video element, fullscreen button
-- **Bottom**: RTSP on/off, resolution, FPS, shutter, gain, pixel format
-
-**Stream**: Browsers do not support RTSP. Use mediamtx HLS (port 8888) or similar. The `/api/stream/url` endpoint returns HLS URL derived from RTSP config.
-
 ## Configuration Tab
 
+- **Calibration**: preview, dark, flat.
+- **Spectrum processing**: Richardson–Lucy PSF sigma, iterations, path to custom PSF
 - **WiFi**: SSID, password (for STA mode). Save writes to `wifi_credentials.conf`.
 - **MQTT**: Broker, port, username, password. Save updates `env_config.json`.
 
@@ -34,6 +39,6 @@
 - **Light** – light background, dark text
 - **Dark** – dark background, light text
 - **High contrast** – black/white
-- **Green military** – dark background, green/amber (terminal style)
+- **Green military** – dark background, green (terminal style)
 
 Theme choice stored in `localStorage` as `spectrometer-theme`.

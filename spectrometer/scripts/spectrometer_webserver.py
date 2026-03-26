@@ -281,6 +281,8 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
     for ch in spec_cfg.get("channels", []):
         if not isinstance(ch, dict) or "id" not in ch:
             continue
+        if not bool(ch.get("active", True)):
+            continue
         line = ch.get("line")
         if not line or "start" not in line or "end" not in line:
             continue
@@ -439,7 +441,7 @@ def _capture_loop():
                 timing_rows.append({"step": "_process_frame_total", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
 
             with _spectrum_lock:
-                _last_spectra.update(spectra)
+                _last_spectra = spectra
             if timing_enabled:
                 cycle_id += 1
                 rows_common = {
@@ -573,7 +575,7 @@ def api_spectrometer_single():
         spec_cfg["_single_capture_overexposure_check"] = True
         spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
         with _spectrum_lock:
-            _last_spectra.update(spectra)
+            _last_spectra = spectra
         ch = next(iter(spectra.keys()), None)
         return jsonify(spectra.get(ch, {"status": "no channels"}))
     except Exception as e:
@@ -810,14 +812,41 @@ def api_spectrometer_status():
         Reads `_running`, `_interval_ms`, `_last_spectra` under lock, and returns current configs.
     """
     proc = get_processing_cfg()
+    spec_cfg = load_spectrometer_config()
+    channel_activity = {}
+    for ch in spec_cfg.get("channels", []):
+        if isinstance(ch, dict) and isinstance(ch.get("id"), str):
+            channel_activity[ch["id"]] = bool(ch.get("active", True))
     with _spectrum_lock:
         channels = list(_last_spectra.keys())
     return jsonify({
         "status": "running" if _running else "idle",
         "interval_ms": _interval_ms,
         "channels": channels,
+        "channel_activity": channel_activity,
         "processing": proc,
     })
+
+
+@app.route("/api/spectrometer/channel_active", methods=["POST"])
+def api_spectrometer_channel_active():
+    """HTTP endpoint: set per-channel active flag used by spectrum processing."""
+    data = request.get_json(silent=True) or {}
+    channel_id = str(data.get("channel_id", "")).strip()
+    active = bool(data.get("active", True))
+    if not channel_id:
+        return jsonify({"error": "channel_id required"}), 400
+    spec_cfg = load_spectrometer_config()
+    found = False
+    for ch in spec_cfg.get("channels", []):
+        if isinstance(ch, dict) and ch.get("id") == channel_id:
+            ch["active"] = active
+            found = True
+            break
+    if not found:
+        return jsonify({"error": "channel not found"}), 404
+    save_spectrometer_config(spec_cfg)
+    return jsonify({"channel_id": channel_id, "active": active})
 
 
 @app.route("/api/spectrometer/spectrum/<channel_id>", methods=["GET"])
