@@ -9,6 +9,7 @@ env_config.json
 .env
 .env.*
 !.env.example
+wifi_credentials.conf
 
 # -----------------------------------------------------------------------------
 # DEVICE-SPECIFIC CONFIGS (paths, calibration, credentials)
