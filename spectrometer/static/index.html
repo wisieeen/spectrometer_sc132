@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spectrometer</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="header">
+    <h1>Spectrometer</h1>
+    <div class="theme-selector">
+      <label>Theme:</label>
+      <select id="themeSelect">
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="high-contrast">High contrast</option>
+        <option value="green-military">Green military</option>
+      </select>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="spectrometer">Spectrometer</button>
+    <button class="tab" data-tab="config">Configuration</button>
+  </nav>
+
+  <main class="content">
+    <section id="tab-spectrometer" class="tab-panel active">
+      <div class="spectrum-area">
+        <canvas id="spectrumCanvas"></canvas>
+        <div id="cursorLabel" class="cursor-label"></div>
+      </div>
+      <div class="controls spectrometer-controls">
+        <div class="control-row">
+          <span class="btn-start-wrap">
+            <button id="btnStart">Start</button>
+            <span id="spectrumTimer" class="spectrum-timer" title="Seconds since last spectrum update">--</span>
+          </span>
+          <button id="btnStop">Stop</button>
+          <button id="btnSingle">Single</button>
+          <button id="btnSaveCsv">Save CSV</button>
+        </div>
+        <div id="apiStatus" class="api-status" aria-live="polite"></div>
+        <div class="control-row">
+          <label>Interval (ms):</label>
+          <input type="number" id="intervalMs" min="100" max="3600000" value="1000">
+        </div>
+        <div class="control-row">
+          <label>Frame average N:</label>
+          <input type="number" id="frameAverageN" min="1" max="1000" value="1">
+        </div>
+        <div class="control-row">
+          <label>Shutter (µs):</label>
+          <input type="number" id="spectrometerShutter" min="100" value="499999">
+        </div>
+        <div class="control-row">
+          <label>Gain (dB):</label>
+          <input type="number" id="spectrometerGain" step="1" value="40">
+        </div>
+        <div class="control-row">
+          <label><input type="checkbox" id="darkFlatEnabled"> Dark/flat correction</label>
+        </div>
+        <div class="control-row">
+          <label><input type="checkbox" id="richardsonLucyEnabled"> Richardson–Lucy deconvolution</label>
+        </div>
+        <div class="config-section channels-section">
+          <h2>Channels</h2>
+          <div id="channelList" class="channel-list"></div>
+          <div class="control-row">
+            <label>Virtual name:</label>
+            <input type="text" id="virtualChannelName" value="v0" placeholder="v0">
+          </div>
+          <div class="control-row">
+            <label title="Allowed: channel identifiers (e.g. ch0), constants, +, -, *, and parentheses. Examples: ch0-ch2*42, ch1+ch3, (ch0+ch1)*0.5">Expression:</label>
+            <input type="text" id="virtualChannelExpr" placeholder="ch0-ch2*42">
+          </div>
+          <div class="control-row">
+            <button id="btnAddVirtualChannel">Add virtual channel</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-config" class="tab-panel">
+      <div class="config-section">
+        <h2>Calibration capture</h2>
+        <p>Use while spectrometer is stopped.</p>
+        <div class="control-row">
+          <button id="btnPreview">Preview</button>
+          <button id="btnCaptureDarkFrame">Dark frame</button>
+          <button id="btnCaptureFlatFrame">Flat frame</button>
+        </div>
+      </div>
+      <div class="config-section">
+        <h2>Spectrum processing</h2>
+        <div class="control-row">
+          <label>Richardson–Lucy PSF sigma:</label>
+          <input type="number" id="richardsonLucyPsfSigma" min="0.5" max="20" step="0.1" value="3">
+        </div>
+        <div class="control-row">
+          <label>Richardson–Lucy iterations:</label>
+          <input type="number" id="richardsonLucyIterations" min="1" max="100" value="15">
+        </div>
+        <div class="control-row">
+          <label>Richardson–Lucy custom PSF (.npy path):</label>
+          <input type="text" id="richardsonLucyPsfPath" placeholder="/path/to/psf.npy">
+        </div>
+      </div>
+      <div class="config-section">
+        <h2>WiFi</h2>
+        <div class="control-row">
+          <label>SSID:</label>
+          <input type="text" id="wifiSsid" placeholder="Network name">
+        </div>
+        <div class="control-row">
+          <label>Password:</label>
+          <input type="password" id="wifiPassword" placeholder="Password">
+        </div>
+        <button id="btnWifiSave">Save WiFi</button>
+      </div>
+      <div class="config-section">
+        <h2>MQTT broker</h2>
+        <div class="control-row">
+          <label>Broker:</label>
+          <input type="text" id="mqttBroker" placeholder="Host or IP">
+        </div>
+        <div class="control-row">
+          <label>Port:</label>
+          <input type="number" id="mqttPort" value="1883">
+        </div>
+        <div class="control-row">
+          <label>Username:</label>
+          <input type="text" id="mqttUser">
+        </div>
+        <div class="control-row">
+          <label>Password:</label>
+          <input type="password" id="mqttPass">
+        </div>
+        <button id="btnMqttSave">Save MQTT</button>
+      </div>
+      <div class="config-section">
+        <h2>System</h2>
+        <div class="control-row">
+          <button id="btnReboot">Reboot</button>
+          <button id="btnShutdown">Shutdown</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

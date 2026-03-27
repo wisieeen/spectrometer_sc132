@@ -96,6 +96,7 @@ Different orders can overlap: m_1\lambda_1 = m_2\lambda_2. Use order-sorting fil
 
 ## 8. Summary for Simulator
 
+
 | Quantity          | Formula                                       |
 | ----------------- | --------------------------------------------- |
 | Groove spacing    | d = 1/\sigma (e.g. \sigma in mm⁻¹)            |
@@ -109,6 +110,6 @@ Different orders can overlap: m_1\lambda_1 = m_2\lambda_2. Use order-sorting fil
 
 ## 9. Related
 
-- [SPECTROMETER_ML_OPTIMIZATION.md](SPECTROMETER_ML_OPTIMIZATION.md) – ML techniques for geometry optimization
-- [spectrometer_optical_simulator.py](spectrometer_optical_simulator.py) – interactive ray diagram
-- [CODER_INSTRUCTIONS.md](CODER_INSTRUCTIONS.md) – optical path tools
+- [spectrometer_optical_simulator.py](spectrometer_optical_simulator.py) - interactive ray diagram
+- [../spectrometer/docs/CODER_INSTRUCTIONS.md](../spectrometer/docs/CODER_INSTRUCTIONS.md) - implementation notes for optical tools
+

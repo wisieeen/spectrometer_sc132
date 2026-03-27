@@ -21,11 +21,30 @@ DEFAULT_CONFIG = "spectrum_saver_config.json"
 
 
 def _load_config(path):
+    """Load a JSON config file from disk.
+
+    Inputs:
+        path: File system path to a JSON file.
+    Output:
+        Parsed JSON object (typically a dict).
+    Transformation:
+        Reads the file and deserializes it with `json.load`.
+    """
     with open(path) as f:
         return json.load(f)
 
 
 def _find_config(config_path):
+    """Resolve the spectrum saver config file path.
+
+    Inputs:
+        config_path: Optional explicit config file path.
+    Output:
+        Absolute/relative path string to the config file, or None if not found.
+    Transformation:
+        If `config_path` exists, returns it; otherwise searches in the current working directory
+        and next to this script for `DEFAULT_CONFIG`.
+    """
     if config_path and os.path.isfile(config_path):
         return config_path
     for base in (os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
@@ -47,6 +66,19 @@ def _get_mqtt_config(cfg):
 
 
 def main():
+    """CLI entrypoint: subscribe to spectrum MQTT and save messages as CSV files.
+
+    Inputs:
+        Command-line args:
+        - `--config` / `-c`: optional path to `spectrum_saver_config.json`
+        - `--spectra-dir` / `-o`: optional output directory for CSV files
+    Output:
+        Writes `spectrum_<channel_id>_<timestamp>.csv` into the configured spectra directory
+        and runs an MQTT loop until interrupted.
+    Transformation:
+        Loads saver config, merges MQTT credentials from env config, connects to the broker,
+        subscribes to the configured topic, and for each received spectrum message writes a CSV.
+    """
     parser = argparse.ArgumentParser(description="Save spectrum MQTT messages to CSV")
     parser.add_argument("--config", "-c", help="Path to spectrum_saver_config.json")
     parser.add_argument("--spectra-dir", "-o", help="Output directory (default: spectra/ in config dir)")
@@ -68,6 +100,19 @@ def main():
         spectra_dir = os.path.join(os.path.dirname(config_path), spectra_dir)
 
     def on_message(client, userdata, msg):
+        """MQTT callback: parse spectrum payload and append it as a CSV file.
+
+        Inputs:
+            client: MQTT client instance.
+            userdata: Unused callback userdata.
+            msg: MQTT message containing JSON payload with spectrum fields.
+        Output:
+            None (side-effect: writes a CSV file to disk).
+        Transformation:
+            - Parses JSON payload and validates `wavelengths_nm` + `intensities` lengths.
+            - Extracts `channel_id` and `timestamp` (ISO-8601, optional) for filename generation.
+            - Writes CSV with header `wavelength,intensity` and one line per sample.
+        """
         try:
             payload = json.loads(msg.payload.decode())
         except (json.JSONDecodeError, UnicodeDecodeError):

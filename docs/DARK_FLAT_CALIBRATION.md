@@ -1,6 +1,6 @@
 # Dark and Flat-Field Calibration
 
-Instructions for acquiring dark and flat frames used by the spectrometer signal processing pipeline. See [SIGNAL_PROCESSING_RESEARCH.md](SIGNAL_PROCESSING_RESEARCH.md) for technique details.
+Instructions for acquiring dark and flat frames used by the spectrometer signal processing pipeline.
 
 ---
 
@@ -29,7 +29,7 @@ Instructions for acquiring dark and flat frames used by the spectrometer signal 
 
 1. **Block all light** to the spectrometer (lens cap, cover slit, or turn off light source).
 2. Set camera to the **same shutter and gain** you will use for measurements.
-3. Capture **10–20 frames** and average them to reduce random noise.
+3. Capture **10–100 frames** and average them to reduce random noise.
 4. Save the averaged frame as `dark.npy` (NumPy format).
 
 ### 3.2 When to Recalibrate
@@ -45,6 +45,7 @@ If you cannot match shutter exactly, dark can be scaled: `dark_scaled = dark * (
 ---
 
 ## 4. Acquiring Flat Frames
+In practice may be challenging to apply in spectrometer hardware setup. Can be skipped.
 
 ### 4.1 Procedure
 
@@ -53,7 +54,7 @@ If you cannot match shutter exactly, dark can be scaled: `dark_scaled = dark * (
    - LED panel with diffuser
    - Clear sky at twilight (avoid direct sun)
 2. Ensure **no saturation**: check that no pixels reach 255 (Y8) or 1023 (Y10). Use lower gain or shorter shutter if needed.
-3. Capture **10–20 frames** and average them.
+3. Capture **10–100 frames** and average them.
 4. Save the averaged frame as `flat.npy`.
 
 ### 4.2 Avoiding Saturation
@@ -67,6 +68,7 @@ If you cannot match shutter exactly, dark can be scaled: `dark_scaled = dark * (
 - After changing optical setup (lens, slit, fibre)
 - After changing gain (flat shape can change)
 - Periodically if lamp intensity drifts
+- Strongly suggested to recalibrate before every measurement series. It takes so little work but ensures best results.
 
 ---
 
@@ -84,7 +86,7 @@ np.save("/path/to/dark.npy", dark_averaged)
 np.save("/path/to/flat.npy", flat_averaged)
 ```
 
-Use the `acquire_dark_flat.py` script (see Section 7) or a short Python snippet.
+Use the `acquire_dark_flat.py` script (see Section 7.3) or a short Python snippet.
 
 ---
 
@@ -108,7 +110,42 @@ Add to `spectrometer_config.json` under `processing`:
 
 ---
 
-## 7. Acquisition Script
+## 7. Acquisition Methods
+
+### 7.1 Webserver UI / REST API
+
+Use this method when `spectrometer_webserver.py` is running.
+
+1. Ensure continuous measurement is stopped.
+2. In UI: **Configuration -> Calibration capture -> Dark frame** or **Flat frame**.
+3. The backend captures and averages frames, then saves a `.npy` file.
+4. Confirm result from response/logs: `path`, `frames_averaged`, and `shape`.
+
+REST endpoints:
+
+- `POST /api/spectrometer/capture_dark_frame`
+- `POST /api/spectrometer/capture_flat_frame`
+
+Notes:
+
+- Endpoint returns `409` if continuous acquisition is active.
+- API reference: [WEBSERVER_API.md](WEBSERVER_API.md).
+
+### 7.2 MQTT Workflow
+
+There is currently **no dedicated MQTT command** for `capture_dark_frame` or `capture_flat_frame`.
+
+Recommended MQTT-based process:
+
+1. Use camera MQTT topics to set measurement conditions (resolution, shutter, gain, pixel format).
+2. Stop RTSP via camera MQTT (`{cmd_topic}rtsp = OFF`).
+3. Acquire dark/flat using Webserver method (7.1) or Terminal script (7.3).
+4. Enable correction via spectrometer MQTT:
+   - `processing_dark_flat_enabled = true`
+
+Topic map: [MQTT_TOPICS.md](MQTT_TOPICS.md).
+
+### 7.3 Terminal Script
 
 Run from the **project root** (parent of `spectrometer/`) so that `spectrometer/` is on the path:
 
@@ -149,4 +186,4 @@ Arguments: `(dark|flat)`, `num_frames`, `output_path`. The script captures `num_
 | Shape mismatch error | Dark/flat resolution ≠ current capture | Re-acquire with same camera_config resolution |
 | Division artifacts | Flat ≈ dark (both low) | Ensure flat has sufficient signal |
 | Stripes or bands | Non-uniform illumination | Improve flat uniformity |
-| Hot pixels in dark | Normal | Averaging reduces them; consider hot-pixel removal (Phase 2) |
+| Hot pixels in dark | Normal | Averaging reduces them|

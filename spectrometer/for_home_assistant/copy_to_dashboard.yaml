@@ -63,6 +63,14 @@ sections:
           columns: 3
           rows: 2
         icon: mdi:power
+      - show_name: true
+        show_icon: true
+        type: button
+        entity: button.lab_mono_camera_reboot
+        grid_options:
+          columns: 3
+          rows: 2
+        icon: mdi:restart
   - path: lab_camera
     cards:
       - type: heading

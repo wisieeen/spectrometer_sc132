@@ -1,0 +1,10 @@
+{
+  "mqtt": {
+    "broker": "brokerIP",
+    "port": 1883,
+    "user": "MQTT_USERNAME",
+    "pass": "MQTT_USER_PASSWORD"
+  },
+  "topic": "lab/spectrometer/state/spectrum/#",
+  "spectra_dir": "spectra"
+}

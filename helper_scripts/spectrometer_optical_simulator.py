@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Spectrometer Optical Path Simulator
+THIS CODE IS HIGHLY EXPERIMENTAL AND NOT YET USED IN THE PROJECT.
 
 Interactive simulation of spectrometer optical elements:
 - Entrance slit, collimation, diffraction grating (reflective/transmissive), camera, detector.
@@ -178,6 +179,19 @@ intensity_var = [True]  # show throughput curve
 # ========== UPDATE ==========
 
 def update(_=None):
+    """Redraw the optical path and spectrum panels using current slider values.
+
+    Inputs:
+        _: Unused callback parameter provided by matplotlib (`on_changed`/`on_clicked`).
+    Output:
+        None (side-effect: clears and repopulates matplotlib axes).
+    Transformation:
+        Reads slider values (grooves density, wavelengths, incident angle, focal lengths, slit, sensor params,
+        grating type), then:
+        - draws a geometrically accurate layout in millimeters,
+        - computes diffraction mapping from wavelength to detector pixel indices,
+        - optionally draws a throughput/intensity curve.
+    """
     ax_rays.cla()
     ax_spectrum.cla()
 
@@ -254,6 +268,18 @@ def update(_=None):
 
     # Dimension annotations (for print layout)
     def dim_line(ax, x1, x2, y, label):
+        """Draw a dimension line with a label between two x-coordinates.
+
+        Inputs:
+            ax: Matplotlib axis.
+            x1, x2: Start/end x-coordinates (mm).
+            y: Baseline y-coordinate used to place the dimension label.
+            label: Text to render next to the dimension.
+        Output:
+            None (side-effect: draws lines/text on `ax`).
+        Transformation:
+            Plots a small “┐┘” style dimension marker and writes `label` near the midpoint.
+        """
         ax.plot([x1, x1, x2, x2], [y, y-2, y-2, y], 'k-', lw=0.8)
         ax.text((x1+x2)/2, y-4, label, fontsize=6, ha='center')
     dim_line(ax_rays, x_slit, x_coll, -detector_h_mm/2 - 8, f'{f_coll:.0f}')
@@ -319,6 +345,15 @@ def update(_=None):
 for s in (s_grooves, s_lam1, s_lam2, s_theta, s_fcoll, s_fcam, s_slit, s_sensor_res, s_pixel_size):
     s.on_changed(update)
 def on_radio(label):
+    """Handle grating type selection from radio buttons.
+
+    Inputs:
+        label: Selected grating type string (e.g. "reflective" or "transmissive").
+    Output:
+        None (side-effect: updates grating type state and triggers redraw).
+    Transformation:
+        Updates `grating_type_var[0]` and calls `update()` to re-render the simulation.
+    """
     grating_type_var[0] = label
     update()
 radio.on_clicked(on_radio)
