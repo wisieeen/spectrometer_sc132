@@ -281,6 +281,8 @@ def _process_frame_to_dict(frame, spec_cfg, dark=None, flat=None, timing_rows=No
     for ch in spec_cfg.get("channels", []):
         if not isinstance(ch, dict) or "id" not in ch:
             continue
+        if not bool(ch.get("active", True)):
+            continue
         line = ch.get("line")
         if not line or "start" not in line or "end" not in line:
             continue
@@ -439,7 +441,7 @@ def _capture_loop():
                 timing_rows.append({"step": "_process_frame_total", "channel_id": "", "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0})
 
             with _spectrum_lock:
-                _last_spectra.update(spectra)
+                _last_spectra = spectra
             if timing_enabled:
                 cycle_id += 1
                 rows_common = {
@@ -562,18 +564,62 @@ def api_spectrometer_single():
     """
     global _last_spectra, _reload_dark_flat_on_next_cycle, _dark_flat_cache
     try:
+        env = _get_env()
+        timing_enabled = _is_timing_enabled(env)
+        timing_path = _timing_log_path(env)
+        timing_rows = [] if timing_enabled else None
+
         _reload_dark_flat_on_next_cycle = True
         invalidate_capture_context_cache()
         spec_cfg = load_spectrometer_config()
         proc = get_processing_cfg(spec_cfg)
         dark, flat, _ = _load_dark_flat_cached(proc, _dark_flat_cache, force_reload=True)
         _reload_dark_flat_on_next_cycle = False
-        frame = _acquire_frame(spec_cfg, dark, flat)
+        t0 = time.perf_counter_ns()
+        frame = _acquire_frame(spec_cfg, dark, flat, timing_rows=timing_rows)
+        if timing_enabled:
+            timing_rows.append(
+                {
+                    "step": "_single_acquire_frame_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         spec_cfg = dict(spec_cfg)
         spec_cfg["_single_capture_overexposure_check"] = True
-        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat)
+        t0 = time.perf_counter_ns()
+        spectra = _process_frame_to_dict(frame, spec_cfg, dark=dark, flat=flat, timing_rows=timing_rows)
+        if timing_enabled:
+            timing_rows.append(
+                {
+                    "step": "_single_process_frame_total",
+                    "channel_id": "",
+                    "duration_ms": (time.perf_counter_ns() - t0) / 1_000_000.0,
+                }
+            )
         with _spectrum_lock:
-            _last_spectra.update(spectra)
+            _last_spectra = spectra
+        if timing_enabled:
+            cycle_id = int(time.time() * 1000)
+            rows_common = {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "cycle_id": cycle_id,
+                "interval_ms": _interval_ms,
+                "frame_average_n": proc["frame_average_n"],
+                "dark_flat_enabled": str(proc["dark_flat_enabled"]).lower(),
+                "richardson_lucy_enabled": str(proc["richardson_lucy_enabled"]).lower(),
+                "channels_configured": len(spec_cfg.get("channels", [])),
+            }
+            for row in timing_rows:
+                _append_timing_row(
+                    timing_path,
+                    {
+                        **rows_common,
+                        "step": row["step"],
+                        "channel_id": row["channel_id"],
+                        "duration_ms": row["duration_ms"],
+                    },
+                )
         ch = next(iter(spectra.keys()), None)
         return jsonify(spectra.get(ch, {"status": "no channels"}))
     except Exception as e:
@@ -810,14 +856,41 @@ def api_spectrometer_status():
         Reads `_running`, `_interval_ms`, `_last_spectra` under lock, and returns current configs.
     """
     proc = get_processing_cfg()
+    spec_cfg = load_spectrometer_config()
+    channel_activity = {}
+    for ch in spec_cfg.get("channels", []):
+        if isinstance(ch, dict) and isinstance(ch.get("id"), str):
+            channel_activity[ch["id"]] = bool(ch.get("active", True))
     with _spectrum_lock:
         channels = list(_last_spectra.keys())
     return jsonify({
         "status": "running" if _running else "idle",
         "interval_ms": _interval_ms,
         "channels": channels,
+        "channel_activity": channel_activity,
         "processing": proc,
     })
+
+
+@app.route("/api/spectrometer/channel_active", methods=["POST"])
+def api_spectrometer_channel_active():
+    """HTTP endpoint: set per-channel active flag used by spectrum processing."""
+    data = request.get_json(silent=True) or {}
+    channel_id = str(data.get("channel_id", "")).strip()
+    active = bool(data.get("active", True))
+    if not channel_id:
+        return jsonify({"error": "channel_id required"}), 400
+    spec_cfg = load_spectrometer_config()
+    found = False
+    for ch in spec_cfg.get("channels", []):
+        if isinstance(ch, dict) and ch.get("id") == channel_id:
+            ch["active"] = active
+            found = True
+            break
+    if not found:
+        return jsonify({"error": "channel not found"}), 404
+    save_spectrometer_config(spec_cfg)
+    return jsonify({"channel_id": channel_id, "active": active})
 
 
 @app.route("/api/spectrometer/spectrum/<channel_id>", methods=["GET"])

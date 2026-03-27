@@ -111,8 +111,9 @@ body {
 
 .content {
   padding: 1rem;
-  max-width: 1200px;
+  max-width: none;
   margin: 0 auto;
+  width: 100%;
 }
 
 .tab-panel {
@@ -131,6 +132,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px;
   margin-bottom: 1rem;
+  overflow: hidden;
 }
 
 #spectrumCanvas {
@@ -148,7 +150,7 @@ body {
   font-size: 0.85rem;
   border-radius: 4px;
   opacity: 0;
-  transform: translate(-50%, -100%);
+  transform: translate(-50%, 0);
   white-space: nowrap;
 }
 
@@ -296,6 +298,10 @@ button:disabled:hover {
   border-radius: 2px;
   border: 1px solid var(--border);
   flex: 0 0 auto;
+}
+
+.channel-desc-input {
+  min-width: 140px;
 }
 
 @media (max-width: 600px) {

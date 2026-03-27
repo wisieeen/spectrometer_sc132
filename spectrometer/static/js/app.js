@@ -44,6 +44,7 @@
   const channelControls = {};
   const channelColors = {};
   const plotColors = ['#0066cc', '#cc3300', '#228833', '#8844cc', '#cc8800', '#008899', '#bb2255', '#6666cc'];
+  let lastAxis = null; // { wlMin, wlMax, intMin, intMax }
   let chartDims = { left: 0, top: 0, width: 0, height: 0, pad: 50 };
 
   function getSeriesMap() {
@@ -183,7 +184,8 @@
     const dpr = window.devicePixelRatio || 1;
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    // Reset transform each draw to avoid cumulative scaling.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const w = rect.width;
     const h = rect.height;
     chartDims = { left: 50, top: 20, width: w - 70, height: h - 50, pad: 50 };
@@ -213,6 +215,7 @@
     const intMin = Math.min(...allInts);
     const intMax = Math.max(...allInts) || 1;
     const intRange = intMax - intMin || 1;
+    lastAxis = { wlMin, wlMax, intMin, intMax };
 
     ctx.strokeStyle = grid;
     ctx.lineWidth = 1;
@@ -273,11 +276,9 @@
   }
 
   function pixelToWavelength(px) {
-    const first = getVisiblePlotSeries()[0];
-    const wl = first?.data?.wavelengths_nm || [];
-    if (wl.length < 2) return null;
-    const wlMin = Math.min(...wl);
-    const wlMax = Math.max(...wl);
+    if (!lastAxis || !Number.isFinite(lastAxis.wlMin) || !Number.isFinite(lastAxis.wlMax)) return null;
+    const wlMin = lastAxis.wlMin;
+    const wlMax = lastAxis.wlMax;
     const x = (px - chartDims.left) / chartDims.width;
     return wlMin + x * (wlMax - wlMin);
   }
@@ -306,7 +307,11 @@
       return `${s.id}: ${int.toFixed(3)}`;
     });
     cursorLabel.textContent = `${wl.toFixed(1)} nm | ${parts.join(' | ')}`;
-    cursorLabel.style.left = px + 'px';
+    const labelWidth = cursorLabel.offsetWidth || 0;
+    const minX = labelWidth / 2 + 4;
+    const maxX = rect.width - labelWidth / 2 - 4;
+    const clampedX = Math.max(minX, Math.min(maxX, px));
+    cursorLabel.style.left = clampedX + 'px';
     cursorLabel.style.top = '10px';
     cursorLabel.style.opacity = '1';
   }
@@ -396,12 +401,25 @@
 
   function ensureChannelControl(id, isVirtual = false) {
     if (!channelControls[id]) {
-      channelControls[id] = { plotEnabled: true, csvEnabled: true, cursorEnabled: true, isVirtual };
+      channelControls[id] = {
+        activeEnabled: true,
+        plotEnabled: true,
+        csvEnabled: true,
+        cursorEnabled: true,
+        description: '',
+        isVirtual,
+      };
     } else if (isVirtual) {
       channelControls[id].isVirtual = true;
     }
+    if (typeof channelControls[id].activeEnabled !== 'boolean') {
+      channelControls[id].activeEnabled = true;
+    }
     if (typeof channelControls[id].cursorEnabled !== 'boolean') {
       channelControls[id].cursorEnabled = true;
+    }
+    if (typeof channelControls[id].description !== 'string') {
+      channelControls[id].description = '';
     }
     ensureChannelColor(id);
   }
@@ -447,6 +465,26 @@
       });
       plotLabel.appendChild(plot);
       plotLabel.append(' Plot');
+      const activeLabel = document.createElement('label');
+      const active = document.createElement('input');
+      active.type = 'checkbox';
+      active.checked = !!channelControls[id].activeEnabled;
+      active.disabled = !!channelControls[id].isVirtual;
+      active.addEventListener('change', async () => {
+        channelControls[id].activeEnabled = active.checked;
+        if (channelControls[id].isVirtual) return;
+        try {
+          await api('POST', '/spectrometer/channel_active', { channel_id: id, active: active.checked });
+          showStatus(`Channel ${id} ${active.checked ? 'activated' : 'deactivated'}.`);
+          schedulePoll();
+        } catch (e) {
+          channelControls[id].activeEnabled = !active.checked;
+          active.checked = channelControls[id].activeEnabled;
+          showStatus('Channel active update failed: ' + (e.message || 'Unknown error'), true);
+        }
+      });
+      activeLabel.appendChild(active);
+      activeLabel.append(' Active');
       const csvLabel = document.createElement('label');
       const csv = document.createElement('input');
       csv.type = 'checkbox';
@@ -466,6 +504,17 @@
       cursorLabelToggle.appendChild(cursorToggle);
       cursorLabelToggle.append(' Cursor');
       row.appendChild(label);
+      const descInput = document.createElement('input');
+      descInput.type = 'text';
+      descInput.placeholder = 'description';
+      descInput.value = channelControls[id].description || '';
+      descInput.className = 'channel-desc-input';
+      descInput.title = 'Description will appear in CSV under channel name';
+      descInput.addEventListener('change', () => {
+        channelControls[id].description = descInput.value || '';
+      });
+      row.appendChild(descInput);
+      row.appendChild(activeLabel);
       row.appendChild(plotLabel);
       row.appendChild(csvLabel);
       row.appendChild(cursorLabelToggle);
@@ -573,15 +622,53 @@
     const wlB = b.wavelengths_nm || [];
     const ia = a.intensities || [];
     const ib = b.intensities || [];
-    const n = Math.min(wlA.length, wlB.length, ia.length, ib.length);
-    const wl = wlA.slice(0, n);
+    const baseN = Math.min(wlA.length, ia.length);
+    if (baseN < 2) return { wavelengths_nm: [], intensities: [] };
+    const baseWl = wlA.slice(0, baseN);
+    const resampledB = resampleSeriesToWavelengths({ wavelengths_nm: wlB, intensities: ib }, baseWl);
+    const bInts = resampledB.intensities || [];
+    const n = Math.min(baseWl.length, bInts.length);
+    const wl = baseWl.slice(0, n);
     const ints = new Array(n);
     for (let i = 0; i < n; i++) {
-      if (op === '+') ints[i] = ia[i] + ib[i];
-      else if (op === '-') ints[i] = ia[i] - ib[i];
-      else ints[i] = ia[i] * ib[i];
+      const av = ia[i];
+      const bv = bInts[i];
+      if (op === '+') ints[i] = av + bv;
+      else if (op === '-') ints[i] = av - bv;
+      else ints[i] = av * bv;
     }
     return { wavelengths_nm: wl, intensities: ints };
+  }
+
+  function resampleSeriesToWavelengths(series, targetWavelengths) {
+    const wl = series.wavelengths_nm || [];
+    const ints = series.intensities || [];
+    const n = Math.min(wl.length, ints.length);
+    if (n < 2 || !Array.isArray(targetWavelengths) || targetWavelengths.length === 0) {
+      return { wavelengths_nm: targetWavelengths ? targetWavelengths.slice() : [], intensities: [] };
+    }
+    const out = new Array(targetWavelengths.length);
+    let j = 0;
+    for (let i = 0; i < targetWavelengths.length; i++) {
+      const t = targetWavelengths[i];
+      while (j < n - 2 && t > wl[j + 1]) j++;
+      if (t <= wl[0]) {
+        out[i] = ints[0];
+        continue;
+      }
+      if (t >= wl[n - 1]) {
+        out[i] = ints[n - 1];
+        continue;
+      }
+      const x0 = wl[j];
+      const x1 = wl[j + 1];
+      const y0 = ints[j];
+      const y1 = ints[j + 1];
+      const denom = (x1 - x0) || 1;
+      const tt = (t - x0) / denom;
+      out[i] = y0 + tt * (y1 - y0);
+    }
+    return { wavelengths_nm: targetWavelengths.slice(), intensities: out };
   }
 
   function recomputeVirtualChannels() {
@@ -665,6 +752,12 @@
     const minLen = selected.reduce((m, s) => Math.min(m, (s.data.intensities || []).length, (s.data.wavelengths_nm || []).length), wl.length);
     const header = ['wavelength_nm', ...selected.map((s) => s.id)];
     const rows = [header.join(',')];
+    const descriptionRow = [''];
+    selected.forEach((s) => {
+      const d = channelControls[s.id]?.description || '';
+      descriptionRow.push(String(d).replace(/[\r\n]+/g, ' ').trim());
+    });
+    rows.push(descriptionRow.join(','));
     for (let i = 0; i < minLen; i++) {
       const vals = [wl[i]];
       selected.forEach((s) => vals.push((s.data.intensities || [])[i] ?? ''));
@@ -773,6 +866,11 @@
       isRunning = st.status === 'running';
       updateButtonStates();
       const channelIds = Array.isArray(st.channels) ? st.channels : [];
+      const activityMap = st.channel_activity || {};
+      Object.keys(activityMap).forEach((channelId) => {
+        ensureChannelControl(channelId, false);
+        channelControls[channelId].activeEnabled = !!activityMap[channelId];
+      });
       for (const channelId of channelIds) {
         ensureChannelControl(channelId, false);
       }
@@ -784,6 +882,11 @@
             return null;
           }
         }));
+        Object.keys(realChannels).forEach((id) => {
+          if (!channelIds.includes(id)) {
+            delete realChannels[id];
+          }
+        });
         fetched.forEach((s) => {
           if (s && s.channel_id && s.wavelengths_nm) {
             realChannels[s.channel_id] = s;
@@ -792,6 +895,11 @@
         recomputeVirtualChannels();
         renderChannelList();
         lastSpectrumUpdateTime = Date.now();
+        drawSpectrum();
+      } else {
+        Object.keys(realChannels).forEach((id) => delete realChannels[id]);
+        recomputeVirtualChannels();
+        renderChannelList();
         drawSpectrum();
       }
 

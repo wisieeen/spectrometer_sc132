@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Spectrometer Optical Path Simulator
+THIS CODE IS HIGHLY EXPERIMENTAL AND NOT YET USED IN THE PROJECT.
 
 Interactive simulation of spectrometer optical elements:
 - Entrance slit, collimation, diffraction grating (reflective/transmissive), camera, detector.
