@@ -4,6 +4,8 @@ Spectrometer calibration wizard. Interactive UI for line selection and wavelengt
 Runs on a device with display (not the headless sensor). Load preview image, define line,
 click spectrum to add calibration pairs, save config.
 """
+from __future__ import annotations
+
 import argparse
 import os
 import sys
@@ -15,8 +17,168 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lib.config import load_spectrometer_config, save_spectrometer_config
+from lib.config import (
+    DEFAULT_SPECTROMETER_CONFIG,
+    load_spectrometer_config,
+    save_spectrometer_config,
+)
 from lib.spectrum import extract_line_profile, fit_calibration
+
+SPECTRUM_DEBOUNCE_MS = 300
+WL_MIN_NM = 200.0
+WL_MAX_NM = 1200.0
+# Vertical spacing between lines in the calibration list panel (axes coordinates)
+LIST_LINE_STEP = 0.095
+
+# Hardcoded calibration lamp wavelength reference lines (nm).
+LAMP_LIBRARY: dict[str, list[float]] = {
+    # Common Ne lamp lines (nm)
+    "Neon": [585.249,614.306,640.225,650.653,667.828,692.947,703.241],
+}
+
+
+def parse_reference_wavelengths(text: str) -> list[float]:
+    """Parse comma/semicolon/whitespace-separated reference wavelengths (nm)."""
+    if not text or not text.strip():
+        return []
+    out: list[float] = []
+    for part in text.replace(";", ",").replace(" ", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            v = float(part)
+        except ValueError:
+            continue
+        if WL_MIN_NM <= v <= WL_MAX_NM:
+            out.append(v)
+    return out
+
+
+def find_calibration_peaks(y: np.ndarray, n_peaks: int, min_distance: int | None = None) -> np.ndarray:
+    """
+    Return up to n_peaks sub-pixel peak positions (float pixel indices) along the profile,
+    greedy by prominence (simple left/right minima), enforcing minimum separation.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    n = int(y.size)
+    if n < 3 or n_peaks < 1:
+        return np.array([], dtype=np.float64)
+    if min_distance is None:
+        min_distance = max(3, n // 200)
+    min_distance = max(1, min_distance)
+
+    local_idx: list[int] = []
+    for i in range(1, n - 1):
+        if y[i] >= y[i - 1] and y[i] > y[i + 1]:
+            local_idx.append(i)
+        elif y[i] > y[i - 1] and y[i] == y[i + 1]:
+            j = i
+            while j + 1 < n and y[j + 1] == y[i]:
+                j += 1
+            if j + 1 < n and y[j + 1] < y[i]:
+                local_idx.append((i + j) // 2)
+
+    if not local_idx:
+        return np.array([], dtype=np.float64)
+
+    idx_arr = np.array(local_idx, dtype=int)
+    prom = np.empty(len(idx_arr), dtype=np.float64)
+    for k, i in enumerate(idx_arr):
+        lo = max(0, i - min_distance * 3)
+        hi = min(n - 1, i + min_distance * 3)
+        left_min = float(np.min(y[lo:i])) if i > lo else float(y[i])
+        right_min = float(np.min(y[i + 1 : hi + 1])) if i < hi else float(y[i])
+        prom[k] = float(y[i]) - max(left_min, right_min)
+
+    base = float(np.percentile(y, 20))
+    span = float(np.max(y) - base)
+    min_prom = max(span * 0.03, 1e-9)
+    keep = prom >= min_prom
+    idx_arr = idx_arr[keep]
+    prom = prom[keep]
+    if len(idx_arr) == 0:
+        i_max = int(np.argmax(y))
+        return np.array([float(i_max)], dtype=np.float64) if n_peaks == 1 else np.array([], dtype=np.float64)
+
+    order = np.argsort(-prom)
+    chosen: list[int] = []
+    for o in order:
+        p = int(idx_arr[o])
+        if all(abs(p - q) >= min_distance for q in chosen):
+            chosen.append(p)
+        if len(chosen) >= n_peaks:
+            break
+
+    if len(chosen) < n_peaks:
+        return np.array([], dtype=np.float64)
+    chosen.sort()
+    return np.array([float(p) for p in chosen[:n_peaks]], dtype=np.float64)
+
+
+def _rss_calibration(
+    pair_tuples: list[tuple[float, float]],
+    fit_type: str,
+    poly_degree: int,
+) -> float:
+    """Residual sum of squares for λ vs pixel fit."""
+    px = np.array([p[0] for p in pair_tuples], dtype=np.float64)
+    wl = np.array([p[1] for p in pair_tuples], dtype=np.float64)
+    coeffs = fit_calibration(pair_tuples, fit_type, poly_degree)
+    pred = np.polyval(coeffs, px)
+    return float(np.sum((wl - pred) ** 2))
+
+
+def auto_calibration_pairs(
+    intensities: np.ndarray,
+    ref_wavelengths_nm: list[float],
+    fit_type: str,
+    poly_degree: int,
+) -> tuple[list[list[float]], str]:
+    """
+    Detect peaks, assign reference wavelengths in increasing or decreasing order along pixels,
+    pick the orientation with lower RSS. Returns (pairs as [px, wl], status message).
+    """
+    wls = sorted(set(float(w) for w in ref_wavelengths_nm))
+    m = len(wls)
+    if m < 2:
+        return [], "Enter at least two reference wavelengths (comma-separated nm)."
+    y = np.asarray(intensities, dtype=np.float64)
+    if y.size < 5:
+        return [], "Spectrum too short; check line ROI."
+
+    peaks = find_calibration_peaks(y, m)
+    if peaks.size < m:
+        return (
+            [],
+            f"Found {int(peaks.size)} peak(s), need {m}. Adjust line/thickness or reference list.",
+        )
+
+    px_sorted = np.sort(peaks)
+    asc = list(zip(px_sorted.tolist(), wls))
+    desc = list(zip(px_sorted.tolist(), list(reversed(wls))))
+    tup_a = [(float(a), float(b)) for a, b in asc]
+    tup_b = [(float(a), float(b)) for a, b in desc]
+
+    try:
+        rss_a = _rss_calibration(tup_a, fit_type, poly_degree)
+        rss_b = _rss_calibration(tup_b, fit_type, poly_degree)
+    except ValueError as e:
+        return [], f"Fit error: {e}"
+
+    eps = 1e-9
+    if rss_a < rss_b - eps:
+        best = [[float(p), float(w)] for p, w in asc]
+        note = "Auto: λ increases with pixel index (lower RSS)."
+    elif rss_b < rss_a - eps:
+        best = [[float(p), float(w)] for p, w in desc]
+        note = "Auto: λ decreases with pixel index (lower RSS)."
+    else:
+        best = [[float(p), float(w)] for p, w in asc]
+        note = "Auto: tie — assumed λ increases with pixel; verify or swap references."
+
+    best.sort(key=lambda p: p[0])
+    return best, note
 
 
 def _default_image_path():
@@ -49,8 +211,19 @@ def _default_config_path():
     Transformation:
         Computes `script_dir` and then returns `os.path.join(project_root, "spectrometer_config.json")`.
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(os.path.dirname(script_dir), "spectrometer_config.json")
+    # Keep calibrate UI aligned with the project's single source of truth path.
+    return DEFAULT_SPECTROMETER_CONFIG
+
+
+def _normalize_channel_id(raw: str) -> str:
+    """Normalize channel id text from CLI/UI for stable lookup."""
+    return (raw or "").strip().lower() or "ch0"
+
+
+def _find_channel_by_id(channels: list, raw_id: str):
+    """Find channel by id with normalized matching (trim + lowercase)."""
+    target = _normalize_channel_id(raw_id)
+    return next((c for c in channels if _normalize_channel_id(c.get("id", "")) == target), None)
 
 
 def main():
@@ -74,7 +247,11 @@ def main():
     ap = argparse.ArgumentParser(description="Spectrometer calibration wizard (GUI)")
     ap.add_argument("--image", default=None, help="Preview image path")
     ap.add_argument("--config", default=None, help="Output config path")
-    ap.add_argument("--channel-id", default="ch0", help="Channel ID")
+    ap.add_argument(
+        "--channel-id",
+        default="ch0",
+        help="Initial channel id to edit; switch channels in the UI without restarting",
+    )
     args = ap.parse_args()
 
     image_path = args.image or _default_image_path()
@@ -98,12 +275,13 @@ def main():
     channels = cfg.setdefault("channels", [])
     calibrations = cfg.setdefault("calibrations", [])
 
-    channel = next((c for c in channels if c["id"] == args.channel_id), None)
+    channel = _find_channel_by_id(channels, args.channel_id)
     if channel is None:
+        initial_channel_id = _normalize_channel_id(args.channel_id)
         channel = {
-            "id": args.channel_id,
+            "id": initial_channel_id,
             "line": {"start": [0, 0], "end": [frame.shape[1] - 1, frame.shape[0] // 2], "thickness": 5},
-            "calibration_id": "default",
+            "calibration_id": f"cal_{initial_channel_id}",
         }
         channels.append(channel)
 
@@ -115,7 +293,7 @@ def main():
     line_start = list(channel["line"]["start"])
     line_end = list(channel["line"]["end"])
     thickness = channel["line"].get("thickness", 5)
-    pairs = [list(p) for p in cal["pairs"]]
+    pairs: list[list[float]] = [list(p) for p in cal["pairs"]]
     fit_type = cal.get("fit", "polynomial")
     poly_degree = cal.get("polynomial_degree", 2)
 
@@ -126,12 +304,16 @@ def main():
     _skip_wl_submit = False
     show_wavelength_x = False
 
+    spectrum_timer_ref: list = [None]
+    tooltip_state = {"axes": None, "visible": False, "text": ""}
+    suppress_slider_callback = [False]
+
     h, w = frame.shape
     fig = plt.figure(figsize=(14, 10))
     gs = fig.add_gridspec(
         5, 1,
         height_ratios=[2.2, 0.5, 1.5, 1, 0.9],
-        left=0.02, right=0.98, top=0.96, bottom=0.18,
+        left=0.02, right=0.98, top=0.96, bottom=0.24,
         hspace=0.15,
     )
 
@@ -147,15 +329,28 @@ def main():
     ax_list.set_axis_off()
     ax_btns.set_axis_off()
 
-    ax_start_x = plt.axes([0.02, 0.62, 0.20, 0.03])
-    ax_start_y = plt.axes([0.24, 0.62, 0.20, 0.03])
-    ax_end_x = plt.axes([0.46, 0.62, 0.20, 0.03])
-    ax_end_y = plt.axes([0.68, 0.62, 0.20, 0.03])
+    # Line sliders: two full-width rows for higher precision.
+    _row_h, _gap = 0.028, 0.006
+    _y_x_row = 0.618
+    _y_y_row = _y_x_row + _row_h + _gap
+    ax_start_y = plt.axes([0.02, _y_y_row, 0.46, _row_h])
+    ax_end_y = plt.axes([0.52, _y_y_row, 0.46, _row_h])
+    ax_start_x = plt.axes([0.02, _y_x_row, 0.46, _row_h])
+    ax_end_x = plt.axes([0.52, _y_x_row, 0.46, _row_h])
 
-    slider_start_x = widgets.Slider(ax_start_x, "Start X", 0, w - 1, valinit=line_start[0], valstep=1)
+    _ch_y = _y_y_row + _row_h + 0.012
+    ax_channel_id = plt.axes([0.02, _ch_y, 0.20, 0.028])
+    ax_ch_apply = plt.axes([0.23, _ch_y, 0.07, 0.028])
+    ax_ch_new = plt.axes([0.32, _ch_y, 0.11, 0.028])
+
     slider_start_y = widgets.Slider(ax_start_y, "Start Y", 0, h - 1, valinit=line_start[1], valstep=1)
-    slider_end_x = widgets.Slider(ax_end_x, "End X", 0, w - 1, valinit=line_end[0], valstep=1)
     slider_end_y = widgets.Slider(ax_end_y, "End Y", 0, h - 1, valinit=line_end[1], valstep=1)
+    slider_start_x = widgets.Slider(ax_start_x, "Start X", 0, w - 1, valinit=line_start[0], valstep=1)
+    slider_end_x = widgets.Slider(ax_end_x, "End X", 0, w - 1, valinit=line_end[0], valstep=1)
+
+    channel_id_box = widgets.TextBox(ax_channel_id, "Channel ", initial=channel["id"])
+    btn_ch_apply = widgets.Button(ax_ch_apply, "Go")
+    btn_ch_new = widgets.Button(ax_ch_new, "New channel")
 
     img_display = ax_img.imshow(frame, cmap="gray", aspect="auto")
     line_artist, = ax_img.plot([], [], "r-", linewidth=1)
@@ -176,25 +371,47 @@ def main():
         Transformation:
             Writes the current endpoint pixel coordinates back into the slider widgets.
         """
-        slider_start_x.set_val(line_start[0])
-        slider_start_y.set_val(line_start[1])
-        slider_end_x.set_val(line_end[0])
-        slider_end_y.set_val(line_end[1])
+        suppress_slider_callback[0] = True
+        try:
+            slider_start_x.set_val(line_start[0])
+            slider_start_y.set_val(line_start[1])
+            slider_end_x.set_val(line_end[0])
+            slider_end_y.set_val(line_end[1])
+        finally:
+            suppress_slider_callback[0] = False
+
+    def _flush_current_to_cfg():
+        """Write current line, pairs, and fit from UI into the active channel and calibration dicts."""
+        channel["line"] = {
+            "start": [int(line_start[0]), int(line_start[1])],
+            "end": [int(line_end[0]), int(line_end[1])],
+            "thickness": thickness,
+        }
+        cal["pairs"] = [list(p) for p in pairs]
+        cal["fit"] = fit_type
+        cal["polynomial_degree"] = poly_degree
+        if len(pairs) >= 2:
+            try:
+                cal["coefficients"] = fit_calibration(
+                    [tuple(p) for p in pairs],
+                    fit_type,
+                    poly_degree,
+                ).tolist()
+            except ValueError:
+                pass
+        else:
+            cal.pop("coefficients", None)
 
     def update_line_display():
-        """Update the on-image visualization of the selected line ROI.
-
-        Inputs:
-            None (uses `line_start` and `line_end` from enclosing scope).
-        Output:
-            None (side-effect updates matplotlib artists and triggers redraw).
-        Transformation:
-            Updates the red line segment and the start/end markers on `ax_img`.
-        """
+        """Update the on-image line segment and start/end markers (no draw)."""
         line_artist.set_data([line_start[0], line_end[0]], [line_start[1], line_end[1]])
         start_marker.set_data([line_start[0]], [line_start[1]])
         end_marker.set_data([line_end[0]], [line_end[1]])
-        fig.canvas.draw_idle()
+
+    def _coeffs_for_current_pairs():
+        if len(pairs) < 2:
+            return None
+        return fit_calibration([tuple(p) for p in pairs], fit_type, poly_degree)
 
     def _wavelength_to_pixel(wl: float, coeffs: np.ndarray, n_pixels: int) -> float:
         """Convert a wavelength value back into a pixel index using calibration coefficients.
@@ -239,8 +456,8 @@ def main():
         end = (int(line_end[0]), int(line_end[1]))
         intensities = extract_line_profile(frame, start, end, thickness)
         pixels = np.arange(len(intensities))
-        if show_wavelength_x and len(pairs) >= 2:
-            coeffs = fit_calibration([tuple(p) for p in pairs], fit_type, poly_degree)
+        coeffs = _coeffs_for_current_pairs()
+        if show_wavelength_x and coeffs is not None:
             x_data = np.polyval(coeffs, pixels)
             ax_spec.set_xlabel("λ (nm)")
         else:
@@ -251,8 +468,7 @@ def main():
         ax_spec.autoscale_view()
         if pairs:
             px = [p[0] for p in pairs]
-            if show_wavelength_x and len(pairs) >= 2:
-                coeffs = fit_calibration([tuple(p) for p in pairs], fit_type, poly_degree)
+            if show_wavelength_x and coeffs is not None:
                 cal_x = np.polyval(coeffs, px)
             else:
                 cal_x = px
@@ -266,7 +482,6 @@ def main():
             cal_markers.set_data(cal_x, py)
         else:
             cal_markers.set_data([], [])
-        fig.canvas.draw_idle()
 
     def _compute_r2(coeffs):
         """Compute R² for how well the given coefficients fit the current calibration pairs.
@@ -297,16 +512,16 @@ def main():
         Transformation:
             Clears existing text, shows `(none)` when empty, otherwise renders ordered entries `px -> nm`.
         """
+        fit_text_artist[0] = None
         ax_list.clear()
         ax_list.set_axis_off()
-        ax_list.set_title("Calibration points")
+        ax_list.set_title(f"Calibration points — {channel['id']}")
         if not pairs:
             ax_list.text(0.02, 0.9, "(none)", transform=ax_list.transAxes, fontsize=9)
         else:
             for i, (px, wl) in enumerate(pairs):
-                y = 0.98 - i * 0.06
+                y = 0.98 - i * LIST_LINE_STEP
                 ax_list.text(0.02, y, f"{i+1}. {px:.1f} px → {wl:.1f} nm", transform=ax_list.transAxes, fontsize=9)
-        fig.canvas.draw_idle()
 
     fit_text_artist = [None]
 
@@ -344,38 +559,50 @@ def main():
                 coef_str = "λ = " + " + ".join(parts)
             r2_str = f"R² = {r2:.6f}" if r2 is not None else "R² = —"
             fit_text_artist[0] = ax_list.text(0.55, 0.5, f"Fit: {fit_type}\n{coef_str}\n{r2_str}", transform=ax_list.transAxes, fontsize=8)
-        fig.canvas.draw_idle()
+
+    def _cancel_spectrum_timer():
+        t = spectrum_timer_ref[0]
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:
+                pass
+            spectrum_timer_ref[0] = None
+
+    def _schedule_spectrum_update():
+        _cancel_spectrum_timer()
+
+        def _fire():
+            spectrum_timer_ref[0] = None
+            update_spectrum()
+            fig.canvas.draw_idle()
+
+        timer = fig.canvas.new_timer(interval=SPECTRUM_DEBOUNCE_MS)
+        timer.single_shot = True
+        timer.add_callback(_fire)
+        timer.start()
+        spectrum_timer_ref[0] = timer
 
     def on_slider_change(_):
-        """Handle ROI slider changes and refresh the derived UI state.
-
-        Inputs:
-            _: slider event payload (unused).
-        Output:
-            None (side-effect updates `line_start`/`line_end` and redraws).
-        Transformation:
-            Reads slider values, updates line endpoint pixel coordinates, then calls `refresh()`.
-        """
+        """Handle ROI slider changes: line updates immediately; spectrum after debounce."""
+        if suppress_slider_callback[0]:
+            return
         line_start[0] = int(slider_start_x.val)
         line_start[1] = int(slider_start_y.val)
         line_end[0] = int(slider_end_x.val)
         line_end[1] = int(slider_end_y.val)
-        refresh()
+        update_line_display()
+        _schedule_spectrum_update()
+        fig.canvas.draw_idle()
 
     def refresh():
-        """Refresh all UI components derived from the current line ROI and calibration state.
-
-        Inputs:
-            None.
-        Output:
-            None (side-effect triggers redraws on multiple axes).
-        Transformation:
-            Calls `update_line_display`, `update_spectrum`, `update_list_display`, and `update_fit_display`.
-        """
+        """Refresh line, spectrum, list, and fit; cancel pending spectrum debounce; one canvas draw."""
+        _cancel_spectrum_timer()
         update_line_display()
         update_spectrum()
         update_list_display()
         update_fit_display()
+        fig.canvas.draw_idle()
 
     def on_image_click(event):
         """Handle clicks on the preview image to set the line endpoints.
@@ -479,23 +706,50 @@ def main():
         Output:
             None (side-effect updates pending pixel selection and UI fields).
         Transformation:
-            - Ignores clicks when not in spectrum axis or when calibration-add mode is disabled.
+            - Active in add-calibration mode or while editing a point (`editing_index` set).
             - Converts x coordinate to pixel space (optionally inverts wavelength->pixel using calibration coefficients).
             - Snaps the pixel to a nearby local maximum to improve calibration stability.
-            - Writes the snapped pixel into `pixel_box` and updates status/instruction text.
+            - In edit mode: updates the pair’s pixel, re-sorts, fixes `editing_index`, syncs boxes, refreshes plot.
         """
-        nonlocal pending_pixel
+        nonlocal pending_pixel, editing_index, _skip_wl_submit
         if event.inaxes != ax_spec or event.xdata is None:
             return
-        if not add_calibration_mode:
+        if not add_calibration_mode and editing_index is None:
             return
         clicked = float(event.xdata)
-        if show_wavelength_x and len(pairs) >= 2:
-            coeffs = fit_calibration([tuple(p) for p in pairs], fit_type, poly_degree)
+        coeffs = _coeffs_for_current_pairs()
+        if show_wavelength_x and coeffs is not None:
             intensities = spec_line.get_ydata()
             n_px = len(intensities)
             clicked = _wavelength_to_pixel(clicked, coeffs, n_px)
         snapped = _snap_to_local_max(clicked, half_window=5)
+
+        if editing_index is not None:
+            wl_keep = float(pairs[editing_index][1])
+            pairs[editing_index] = [snapped, wl_keep]
+            pairs.sort(key=lambda p: p[0])
+            editing_index = min(
+                range(len(pairs)),
+                key=lambda i: abs(pairs[i][0] - snapped) + 1e3 * abs(pairs[i][1] - wl_keep),
+            )
+            _skip_wl_submit = True
+            try:
+                pixel_box.set_val(f"{pairs[editing_index][0]:.1f}")
+                wl_box.set_val(f"{pairs[editing_index][1]:.1f}")
+                pt_box.set_val(str(editing_index + 1))
+            finally:
+                _skip_wl_submit = False
+            if abs(snapped - clicked) > 0.5:
+                status_label.set_text(
+                    f"Edit: pixel → {pairs[editing_index][0]:.1f} (snapped) — click again or Update / Enter"
+                )
+            else:
+                status_label.set_text(
+                    f"Edit point {editing_index + 1}: pixel {pairs[editing_index][0]:.1f} — Update or Enter on λ"
+                )
+            refresh()
+            return
+
         pending_pixel = snapped
         pixel_box.set_val(f"{snapped:.1f}")
         wl_box.set_val("")
@@ -526,7 +780,7 @@ def main():
             if not px_str:
                 return
             px = float(px_str)
-            if not (200 <= wl <= 1200):
+            if not (WL_MIN_NM <= wl <= WL_MAX_NM):
                 return
             if editing_index is not None:
                 pairs[editing_index] = [px, wl]
@@ -549,14 +803,14 @@ def main():
         nonlocal fit_type
         fit_type = "linear"
         fit_label.set_text(f"Fit: {fit_type}")
-        update_fit_display()
+        refresh()
 
     def fit_poly_click(_):
         """Switch the calibration fit model to polynomial (λ = poly(px))."""
         nonlocal fit_type
         fit_type = "polynomial"
         fit_label.set_text(f"Fit: {fit_type}")
-        update_fit_display()
+        refresh()
 
     def _get_selected_index():
         """Resolve the currently selected point index from the UI text box.
@@ -611,7 +865,10 @@ def main():
                 wl_box.set_val(f"{wl:.1f}")
             finally:
                 _skip_wl_submit = False
-            status_label.set_text(f"Editing point {idx+1} — change values, press Enter or Update")
+            status_label.set_text(
+                f"Editing point {idx+1} — change px/λ in boxes, click spectrum to move pixel, then Update or Enter"
+            )
+            ax_spec.set_title("Spectrum — click to move pixel for edited point")
         else:
             status_label.set_text("Select valid point #")
         fig.canvas.draw_idle()
@@ -627,7 +884,7 @@ def main():
             if not px_str:
                 return
             px = float(px_str)
-            if not (200 <= wl <= 1200):
+            if not (WL_MIN_NM <= wl <= WL_MAX_NM):
                 return
             pairs[editing_index] = [px, wl]
             pairs.sort(key=lambda p: p[0])
@@ -639,54 +896,28 @@ def main():
         except ValueError:
             pass
 
-    def save_click(_):
-        """Save the current line + calibration settings into spectrometer config on disk.
+    ax_lamp = plt.axes([0.02, 0.135, 0.62, 0.07])
+    ax_auto_cal = plt.axes([0.65, 0.135, 0.12, 0.07])
+    ax_set_line = plt.axes([0.02, 0.02, 0.06, 0.10])
+    ax_add_cal = plt.axes([0.09, 0.02, 0.09, 0.10])
+    ax_fit_linear = plt.axes([0.19, 0.02, 0.05, 0.10])
+    ax_fit_poly = plt.axes([0.25, 0.02, 0.07, 0.10])
+    ax_save = plt.axes([0.33, 0.02, 0.07, 0.10])
+    ax_thick = plt.axes([0.41, 0.02, 0.08, 0.10])
+    ax_pixel = plt.axes([0.50, 0.02, 0.08, 0.10])
+    ax_wl = plt.axes([0.59, 0.02, 0.12, 0.10])
+    ax_pt = plt.axes([0.72, 0.02, 0.04, 0.10])
+    ax_del = plt.axes([0.77, 0.02, 0.04, 0.10])
+    ax_edit = plt.axes([0.82, 0.02, 0.04, 0.10])
+    ax_update = plt.axes([0.87, 0.02, 0.05, 0.10])
+    ax_wl_x = plt.axes([0.93, 0.02, 0.05, 0.10])
 
-        Inputs:
-            _: unused callback payload.
-        Output:
-            None (side-effect writes config file and updates status label).
-        Transformation:
-            - Updates `channel["line"]` from current line ROI.
-            - Updates calibration pair list and fit type.
-            - Recomputes `coefficients` when at least two pairs exist.
-            - Saves via `save_spectrometer_config(cfg, config_path)`.
-        """
-        channel["line"] = {
-            "start": [int(line_start[0]), int(line_start[1])],
-            "end": [int(line_end[0]), int(line_end[1])],
-            "thickness": thickness,
-        }
-        cal["pairs"] = pairs
-        cal["fit"] = fit_type
-        cal["polynomial_degree"] = poly_degree
-        if len(pairs) >= 2:
-            coeffs = fit_calibration(
-                [tuple(p) for p in pairs],
-                fit_type,
-                poly_degree,
-            )
-            cal["coefficients"] = coeffs.tolist()
-        try:
-            save_spectrometer_config(cfg, config_path)
-            status_label.set_text(f"Config saved to {config_path}")
-        except Exception as e:
-            status_label.set_text(f"Error: {e}")
-        fig.canvas.draw_idle()
-
-    ax_set_line = plt.axes([0.02, 0.02, 0.06, 0.12])
-    ax_add_cal = plt.axes([0.09, 0.02, 0.09, 0.12])
-    ax_fit_linear = plt.axes([0.19, 0.02, 0.05, 0.12])
-    ax_fit_poly = plt.axes([0.25, 0.02, 0.07, 0.12])
-    ax_save = plt.axes([0.33, 0.02, 0.07, 0.12])
-    ax_thick = plt.axes([0.41, 0.02, 0.08, 0.12])
-    ax_pixel = plt.axes([0.50, 0.02, 0.08, 0.12])
-    ax_wl = plt.axes([0.59, 0.02, 0.12, 0.12])
-    ax_pt = plt.axes([0.72, 0.02, 0.04, 0.12])
-    ax_del = plt.axes([0.77, 0.02, 0.04, 0.12])
-    ax_edit = plt.axes([0.82, 0.02, 0.04, 0.12])
-    ax_update = plt.axes([0.87, 0.02, 0.05, 0.12])
-    ax_wl_x = plt.axes([0.93, 0.02, 0.05, 0.12])
+    lamp_names = list(LAMP_LIBRARY.keys())
+    default_lamp_name = "Neon" if "Neon" in LAMP_LIBRARY else (lamp_names[0] if lamp_names else "")
+    selected_lamp = [default_lamp_name]
+    lamp_radio = widgets.RadioButtons(ax_lamp, lamp_names, active=lamp_names.index(default_lamp_name))
+    lamp_radio.on_clicked(lambda label: selected_lamp.__setitem__(0, label))
+    btn_auto_cal = widgets.Button(ax_auto_cal, "Auto cal")
 
     btn_set_line = widgets.Button(ax_set_line, "Set line")
     btn_add_cal = widgets.Button(ax_add_cal, "Add calibration point")
@@ -704,6 +935,129 @@ def main():
 
     status_label = ax_btns.text(0.02, 0.5, "", transform=ax_btns.transAxes, fontsize=9)
     fit_label = ax_btns.text(0.85, 0.5, f"Fit: {fit_type}", transform=ax_btns.transAxes, fontsize=10)
+
+    def _resolve_calibration_for_channel(ch: dict) -> dict:
+        calib_id = ch.get("calibration_id") or "default"
+        c = next((x for x in calibrations if x["id"] == calib_id), None)
+        if c is None:
+            c = {"id": calib_id, "pairs": [], "fit": "polynomial", "polynomial_degree": 2}
+            calibrations.append(c)
+            ch["calibration_id"] = calib_id
+        return c
+
+    def _load_cfg_to_ui():
+        nonlocal thickness, fit_type, poly_degree
+        line_start[0] = int(channel["line"]["start"][0])
+        line_start[1] = int(channel["line"]["start"][1])
+        line_end[0] = int(channel["line"]["end"][0])
+        line_end[1] = int(channel["line"]["end"][1])
+        thickness = int(channel["line"].get("thickness", 5))
+        pairs.clear()
+        pairs.extend([list(p) for p in cal.get("pairs", [])])
+        fit_type = cal.get("fit", "polynomial")
+        poly_degree = int(cal.get("polynomial_degree", 2))
+        _sync_sliders_to_line()
+        thick_box.set_val(str(thickness))
+        channel_id_box.set_val(channel["id"])
+        fit_label.set_text(f"Fit: {fit_type}")
+        pt_box.set_val("1")
+
+    def channel_apply_click(_):
+        nonlocal channel, cal, line_click_count, add_calibration_mode, pending_pixel, editing_index
+        _flush_current_to_cfg()
+        raw = _normalize_channel_id(channel_id_box.text)
+        ch = _find_channel_by_id(channels, raw)
+        if ch is None:
+            calib_id = f"cal_{raw}"
+            ch = {
+                "id": raw,
+                "line": {
+                    "start": [0, 0],
+                    "end": [w - 1, h // 2],
+                    "thickness": 5,
+                },
+                "calibration_id": calib_id,
+            }
+            channels.append(ch)
+            if not any(x["id"] == calib_id for x in calibrations):
+                calibrations.append(
+                    {"id": calib_id, "pairs": [], "fit": "polynomial", "polynomial_degree": 2}
+                )
+        channel = ch
+        cal = _resolve_calibration_for_channel(channel)
+        _load_cfg_to_ui()
+        line_click_count = 0
+        add_calibration_mode = False
+        pending_pixel = None
+        editing_index = None
+        ax_img.set_title("Camera image — click two points to set line")
+        ax_spec.set_title("Spectrum (intensity vs pixel) — click to add calibration point")
+        pixel_box.set_val("")
+        wl_box.set_val("")
+        status_label.set_text(f"Channel: {channel['id']}")
+        refresh()
+
+    def channel_new_click(_):
+        nonlocal channel, cal, line_click_count, add_calibration_mode, pending_pixel, editing_index
+        _flush_current_to_cfg()
+        existing = {_normalize_channel_id(c.get("id", "")) for c in channels}
+        n = 0
+        while f"ch{n}" in existing:
+            n += 1
+        cid = f"ch{n}"
+        calib_id = f"cal_{cid}"
+        ch = {
+            "id": cid,
+            "line": {"start": [0, 0], "end": [w - 1, h // 2], "thickness": 5},
+            "calibration_id": calib_id,
+        }
+        channels.append(ch)
+        calibrations.append(
+            {"id": calib_id, "pairs": [], "fit": "polynomial", "polynomial_degree": 2}
+        )
+        channel = ch
+        cal = next(c for c in calibrations if c["id"] == calib_id)
+        _load_cfg_to_ui()
+        line_click_count = 0
+        add_calibration_mode = False
+        pending_pixel = None
+        editing_index = None
+        ax_img.set_title("Camera image — click two points to set line")
+        ax_spec.set_title("Spectrum (intensity vs pixel) — click to add calibration point")
+        pixel_box.set_val("")
+        wl_box.set_val("")
+        status_label.set_text(f"New channel: {cid}")
+        refresh()
+
+    def save_click(_):
+        """Persist full config: flush active channel UI state, then write JSON."""
+        _flush_current_to_cfg()
+        try:
+            save_spectrometer_config(cfg, config_path)
+            status_label.set_text(f"Saved {len(channels)} channel(s) to {config_path}")
+        except Exception as e:
+            status_label.set_text(f"Error: {e}")
+        fig.canvas.draw_idle()
+
+    def auto_cal_click(_):
+        """Detect peaks, assign reference wavelengths (either dispersion direction), replace pairs."""
+        nonlocal pending_pixel, editing_index, add_calibration_mode
+        refs = LAMP_LIBRARY[selected_lamp[0]]
+        start = (int(line_start[0]), int(line_start[1]))
+        end = (int(line_end[0]), int(line_end[1]))
+        intensities = extract_line_profile(frame, start, end, thickness)
+        new_pairs, msg = auto_calibration_pairs(intensities, refs, fit_type, poly_degree)
+        if not new_pairs:
+            status_label.set_text(msg)
+            fig.canvas.draw_idle()
+            return
+        pairs.clear()
+        pairs.extend(new_pairs)
+        pending_pixel = None
+        editing_index = None
+        add_calibration_mode = False
+        status_label.set_text(msg)
+        refresh()
 
     def on_thickness_submit(text):
         """Handle line thickness input submission from the text box.
@@ -747,6 +1101,11 @@ def main():
     thick_box.on_submit(on_thickness_submit)
     wl_box.on_submit(on_wavelength_submit)
 
+    def on_channel_id_submit(_text):
+        channel_apply_click(None)
+
+    channel_id_box.on_submit(on_channel_id_submit)
+
     def on_click(event):
         """Global click handler that dispatches clicks to the correct axis-specific callbacks.
 
@@ -764,6 +1123,9 @@ def main():
 
     btn_set_line.on_clicked(set_line_click)
     btn_add_cal.on_clicked(add_calibration_click)
+    btn_ch_apply.on_clicked(channel_apply_click)
+    btn_ch_new.on_clicked(channel_new_click)
+    btn_auto_cal.on_clicked(auto_cal_click)
     btn_fit_linear.on_clicked(fit_linear_click)
     btn_fit_poly.on_clicked(fit_poly_click)
     btn_save.on_clicked(save_click)
@@ -781,10 +1143,13 @@ def main():
     tooltip_axes = {
         ax_img: "Click two points to set the spectrum line",
         ax_spec: "Spectrum — click to add calibration point when in Add mode",
-        ax_start_x: "Fine-tune start marker X position",
-        ax_start_y: "Fine-tune start marker Y position",
-        ax_end_x: "Fine-tune end marker X position",
-        ax_end_y: "Fine-tune end marker Y position",
+        ax_start_y: "Fine-tune start marker Y (above X)",
+        ax_start_x: "Fine-tune start marker X",
+        ax_end_y: "Fine-tune end marker Y (above X)",
+        ax_end_x: "Fine-tune end marker X",
+        ax_channel_id: "Channel id (e.g. ch0). Go loads or creates it.",
+        ax_ch_apply: "Load channel id from box; creates new channel + cal if unknown id.",
+        ax_ch_new: "Add ch0, ch1, … with empty calibration; previous channel kept in memory.",
         ax_set_line: "Click two points on the image to define the spectrum line",
         ax_add_cal: "Click spectrum to add a calibration point. Enter wavelength in λ box.",
         ax_fit_linear: "Use linear fit for pixel → wavelength",
@@ -798,6 +1163,8 @@ def main():
         ax_edit: "Load selected point into px/λ for editing.",
         ax_update: "Apply edited values (after Edit). Does not add new points.",
         ax_wl_x: "Show wavelength (nm) on spectrum x-axis instead of pixel index.",
+        ax_lamp: "Calibration lamp selection (hardcoded reference wavelengths).",
+        ax_auto_cal: "Find peaks and assign wavelengths; tries both dispersion directions (lower RSS wins).",
     }
 
     def on_hover(event):
@@ -811,13 +1178,29 @@ def main():
             If `event.inaxes` is in `tooltip_axes`, updates tooltip text and makes it visible;
             otherwise hides the tooltip.
         """
-        if event.inaxes in tooltip_axes:
-            tooltip_annot.set_text(tooltip_axes[event.inaxes])
+        ax = event.inaxes
+        if ax in tooltip_axes:
+            text = tooltip_axes[ax]
+            vis = True
+        else:
+            text = ""
+            vis = False
+        axes_changed = ax != tooltip_state["axes"]
+        vis_changed = vis != tooltip_state["visible"]
+        text_changed = vis and text != tooltip_state["text"]
+        tooltip_state["axes"] = ax
+        tooltip_state["visible"] = vis
+        tooltip_state["text"] = text if vis else ""
+
+        if vis:
+            tooltip_annot.set_text(text)
             tooltip_annot.xy = (event.x, event.y)
             tooltip_annot.set_visible(True)
         else:
             tooltip_annot.set_visible(False)
-        fig.canvas.draw_idle()
+
+        if axes_changed or vis_changed or text_changed:
+            fig.canvas.draw_idle()
 
     fig.canvas.mpl_connect("button_press_event", on_click)
     fig.canvas.mpl_connect("motion_notify_event", on_hover)
