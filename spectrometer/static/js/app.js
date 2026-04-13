@@ -165,16 +165,34 @@
   }
 
   function interpolateAt(wl, wavelengths, intensities) {
-    if (wavelengths.length === 0) return 0;
-    if (wl <= wavelengths[0]) return intensities[0];
-    if (wl >= wavelengths[wavelengths.length - 1]) return intensities[intensities.length - 1];
-    for (let i = 0; i < wavelengths.length - 1; i++) {
-      if (wl >= wavelengths[i] && wl <= wavelengths[i + 1]) {
-        const t = (wl - wavelengths[i]) / (wavelengths[i + 1] - wavelengths[i]);
+    const n = Math.min(wavelengths.length, intensities.length);
+    if (n === 0) return 0;
+    if (n === 1) return intensities[0];
+
+    const first = wavelengths[0];
+    const last = wavelengths[n - 1];
+    const ascending = first <= last;
+
+    if (ascending) {
+      if (wl <= first) return intensities[0];
+      if (wl >= last) return intensities[n - 1];
+    } else {
+      if (wl >= first) return intensities[0];
+      if (wl <= last) return intensities[n - 1];
+    }
+
+    for (let i = 0; i < n - 1; i++) {
+      const x0 = wavelengths[i];
+      const x1 = wavelengths[i + 1];
+      const left = Math.min(x0, x1);
+      const right = Math.max(x0, x1);
+      if (wl >= left && wl <= right) {
+        const denom = (x1 - x0) || 1;
+        const t = (wl - x0) / denom;
         return intensities[i] + t * (intensities[i + 1] - intensities[i]);
       }
     }
-    return 0;
+    return intensities[n - 1];
   }
 
   function drawSpectrum() {
